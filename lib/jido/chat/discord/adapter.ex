@@ -9,6 +9,7 @@ defmodule Jido.Chat.Discord.Adapter do
     ChannelInfo,
     EphemeralMessage,
     EventEnvelope,
+    FileUpload,
     Incoming,
     Message,
     MessagePage,
@@ -44,6 +45,7 @@ defmodule Jido.Chat.Discord.Adapter do
       initialize: :fallback,
       shutdown: :fallback,
       send_message: :native,
+      send_file: :native,
       edit_message: :native,
       delete_message: :native,
       start_typing: :native,
@@ -57,6 +59,7 @@ defmodule Jido.Chat.Discord.Adapter do
       fetch_messages: :native,
       fetch_channel_messages: :native,
       list_threads: :native,
+      open_thread: :native,
       post_channel_message: :fallback,
       stream: :fallback,
       open_modal: :native,
@@ -86,87 +89,17 @@ defmodule Jido.Chat.Discord.Adapter do
 
   @impl true
   def transform_incoming(%Nostrum.Struct.Message{} = msg) do
-    chat_type = parse_chat_type(msg)
-
-    {:ok,
-     Incoming.new(%{
-       external_room_id: msg.channel_id,
-       external_user_id: get_user_id(msg),
-       text: msg.content,
-       media: extract_media(msg),
-       username: get_username(msg),
-       display_name: get_display_name(msg),
-       external_message_id: msg.id,
-       timestamp: msg.timestamp,
-       chat_type: chat_type,
-       chat_title: nil,
-       channel_meta: %{
-         adapter_name: :discord,
-         external_room_id: msg.channel_id,
-         external_thread_id: nil,
-         chat_type: chat_type,
-         chat_title: nil,
-         is_dm: chat_type == :dm,
-         metadata: %{}
-       },
-       raw: Map.from_struct(msg)
-     })}
+    do_transform_incoming(Map.from_struct(msg))
   end
 
   def transform_incoming(%{channel_id: channel_id} = msg) when is_map(msg) do
-    chat_type = parse_map_chat_type(msg)
-
-    {:ok,
-     Incoming.new(%{
-       external_room_id: channel_id,
-       external_user_id: get_map_value(msg, [:author, "author"]) |> get_nested_id(),
-       text: get_map_value(msg, [:content, "content"]),
-       media: extract_media(msg),
-       username: get_map_value(msg, [:author, "author"]) |> get_nested_username(),
-       display_name: get_map_value(msg, [:author, "author"]) |> get_nested_display_name(),
-       external_message_id: get_map_value(msg, [:id, "id"]),
-       timestamp: get_map_value(msg, [:timestamp, "timestamp"]),
-       chat_type: chat_type,
-       chat_title: nil,
-       channel_meta: %{
-         adapter_name: :discord,
-         external_room_id: channel_id,
-         external_thread_id: nil,
-         chat_type: chat_type,
-         chat_title: nil,
-         is_dm: chat_type == :dm,
-         metadata: %{}
-       },
-       raw: msg
-     })}
+    _ = channel_id
+    do_transform_incoming(msg)
   end
 
   def transform_incoming(%{"channel_id" => channel_id} = msg) when is_map(msg) do
-    chat_type = parse_map_chat_type(msg)
-
-    {:ok,
-     Incoming.new(%{
-       external_room_id: channel_id,
-       external_user_id: get_map_value(msg, [:author, "author"]) |> get_nested_id(),
-       text: get_map_value(msg, [:content, "content"]),
-       media: extract_media(msg),
-       username: get_map_value(msg, [:author, "author"]) |> get_nested_username(),
-       display_name: get_map_value(msg, [:author, "author"]) |> get_nested_display_name(),
-       external_message_id: get_map_value(msg, [:id, "id"]),
-       timestamp: get_map_value(msg, [:timestamp, "timestamp"]),
-       chat_type: chat_type,
-       chat_title: nil,
-       channel_meta: %{
-         adapter_name: :discord,
-         external_room_id: channel_id,
-         external_thread_id: nil,
-         chat_type: chat_type,
-         chat_title: nil,
-         is_dm: chat_type == :dm,
-         metadata: %{}
-       },
-       raw: msg
-     })}
+    _ = channel_id
+    do_transform_incoming(msg)
   end
 
   def transform_incoming(_), do: {:error, :unsupported_message_type}
@@ -186,6 +119,21 @@ defmodule Jido.Chat.Discord.Adapter do
          status: :sent,
          raw: result
        })}
+    end
+  end
+
+  @impl true
+  def send_file(channel_id, file, opts \\ []) do
+    upload = FileUpload.normalize(file)
+
+    with {:ok, file_opt} <- upload_input(upload),
+         {:ok, result} <-
+           transport(opts).send_message(
+             channel_id,
+             upload_caption(upload),
+             upload_transport_opts(opts, file_opt)
+           ) do
+      {:ok, upload_response(upload, result, channel_id)}
     end
   end
 
@@ -278,6 +226,20 @@ defmodule Jido.Chat.Discord.Adapter do
   def open_dm(user_id, opts \\ []) do
     opts = pick_opts(opts, [:transport, :nostrum_user_api])
     transport(opts).open_dm(user_id, opts)
+  end
+
+  @impl true
+  def open_thread(channel_id, message_id, opts \\ []) do
+    with {:ok, result} <- transport(opts).open_thread(channel_id, message_id, opts) do
+      {:ok,
+       %{
+         external_thread_id:
+           stringify(result[:external_thread_id] || result["external_thread_id"]),
+         delivery_external_room_id:
+           stringify(result[:delivery_external_room_id] || result["delivery_external_room_id"]),
+         parent_id: stringify(result[:parent_id] || result["parent_id"])
+       }}
+    end
   end
 
   @impl true
@@ -593,6 +555,83 @@ defmodule Jido.Chat.Discord.Adapter do
 
   defp parse_payload_event(_payload, _path), do: {:error, :unsupported_message_type}
 
+  defp upload_transport_opts(opts, file_opt) do
+    opts
+    |> pick_opts([
+      :transport,
+      :embeds,
+      :components,
+      :tts,
+      :allowed_mentions,
+      :message_reference,
+      :reply_to_id,
+      :nostrum_message_api
+    ])
+    |> Keyword.put(:file, file_opt)
+  end
+
+  defp upload_response(%FileUpload{} = upload, result, channel_id) do
+    attachment =
+      (result[:attachments] || result["attachments"] || [])
+      |> List.first()
+      |> normalize_map()
+
+    delivered_kind =
+      case attachment[:content_type] || attachment["content_type"] do
+        <<"image/", _::binary>> -> :image
+        _ -> upload.kind
+      end
+
+    Response.new(%{
+      message_id: stringify(result[:message_id] || result["message_id"]),
+      channel_id: stringify(result[:channel_id] || result["channel_id"] || channel_id),
+      timestamp: result[:timestamp] || result["timestamp"],
+      channel_type: :discord,
+      status: :sent,
+      raw: result[:raw] || result["raw"] || result,
+      metadata:
+        %{
+          attachment_id: attachment[:id] || attachment["id"],
+          filename: attachment[:filename] || attachment["filename"],
+          size: attachment[:size] || attachment["size"],
+          url: attachment[:url] || attachment["url"],
+          content_type: attachment[:content_type] || attachment["content_type"],
+          upload_kind: upload.kind,
+          delivered_kind: delivered_kind
+        }
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new()
+    })
+  end
+
+  defp upload_input(%FileUpload{path: path}) when is_binary(path) and path != "", do: {:ok, path}
+
+  defp upload_input(%FileUpload{data: data, filename: filename})
+       when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
+    {:ok, %{body: data, name: filename}}
+  end
+
+  defp upload_input(%FileUpload{data: data}) when is_binary(data) and data != "" do
+    {:error, :missing_filename}
+  end
+
+  defp upload_input(%FileUpload{url: url}) when is_binary(url) and url != "" do
+    {:error, :unsupported_remote_url}
+  end
+
+  defp upload_input(_upload), do: {:error, :missing_file_source}
+
+  defp upload_caption(%FileUpload{} = upload) do
+    metadata = upload.metadata || %{}
+
+    metadata[:caption] || metadata["caption"] || metadata[:alt_text] || metadata["alt_text"] ||
+      metadata[:transcript] || metadata["transcript"]
+  end
+
+  defp normalize_map(%_{} = struct), do: Map.from_struct(struct)
+  defp normalize_map(map) when is_map(map), do: map
+  defp normalize_map(_), do: %{}
+
   defp interaction_event_envelope(payload) do
     type = map_get(payload, [:type, "type"])
     channel_id = map_get(payload, [:channel_id, "channel_id"])
@@ -849,18 +888,6 @@ defmodule Jido.Chat.Discord.Adapter do
   defp thread_id(%Incoming{external_room_id: room_id, external_thread_id: thread_id}),
     do: "discord:#{room_id}:#{thread_id}"
 
-  defp get_user_id(%{author: %{id: id}}), do: id
-  defp get_user_id(_), do: nil
-
-  defp get_username(%{author: %{username: username}}), do: username
-  defp get_username(_), do: nil
-
-  defp get_display_name(%{author: %{global_name: global_name}}) when not is_nil(global_name),
-    do: global_name
-
-  defp get_display_name(%{author: %{username: username}}), do: username
-  defp get_display_name(_), do: nil
-
   defp get_map_value(map, keys) when is_map(map),
     do: Enum.find_value(keys, fn key -> Map.get(map, key) end)
 
@@ -879,14 +906,89 @@ defmodule Jido.Chat.Discord.Adapter do
       get_map_value(author, [:username, "username"])
   end
 
-  defp parse_chat_type(%{guild_id: nil}), do: :dm
-  defp parse_chat_type(%{guild_id: _}), do: :guild
+  defp parse_chat_type(msg) when is_map(msg) do
+    channel_type = get_map_value(msg, [:type, "type"])
+    guild_id = get_map_value(msg, [:guild_id, "guild_id"])
+
+    cond do
+      thread_channel_type?(channel_type) -> :thread
+      is_nil(guild_id) -> :dm
+      true -> :guild
+    end
+  end
+
   defp parse_chat_type(_), do: :unknown
 
   defp parse_map_chat_type(msg) when is_map(msg) do
-    guild_id = get_map_value(msg, [:guild_id, "guild_id"])
-    if guild_id, do: :guild, else: :dm
+    parse_chat_type(msg)
   end
+
+  defp do_transform_incoming(msg) when is_map(msg) do
+    route = thread_route(msg)
+    chat_type = parse_map_chat_type(msg)
+
+    {:ok,
+     Incoming.new(%{
+       external_room_id: route.external_room_id,
+       external_user_id: get_map_value(msg, [:author, "author"]) |> get_nested_id(),
+       text: get_map_value(msg, [:content, "content"]),
+       media: extract_media(msg),
+       username: get_map_value(msg, [:author, "author"]) |> get_nested_username(),
+       display_name: get_map_value(msg, [:author, "author"]) |> get_nested_display_name(),
+       external_message_id: get_map_value(msg, [:id, "id"]),
+       timestamp: get_map_value(msg, [:timestamp, "timestamp"]),
+       chat_type: chat_type,
+       chat_title: nil,
+       external_thread_id: route.external_thread_id,
+       delivery_external_room_id: route.delivery_external_room_id,
+       channel_meta: %{
+         adapter_name: :discord,
+         external_room_id: route.external_room_id,
+         external_thread_id: route.external_thread_id,
+         delivery_external_room_id: route.delivery_external_room_id,
+         chat_type: chat_type,
+         chat_title: nil,
+         is_dm: chat_type == :dm,
+         metadata: %{parent_id: route.parent_id, channel_id: route.channel_id}
+       },
+       raw: msg
+     })}
+  end
+
+  defp thread_route(msg) when is_map(msg) do
+    channel_id = stringify(get_map_value(msg, [:channel_id, "channel_id"]))
+
+    nested_parent_id =
+      case get_map_value(msg, [:thread, "thread"]) do
+        thread when is_map(thread) -> get_map_value(thread, [:parent_id, "parent_id"])
+        _ -> nil
+      end
+
+    parent_id =
+      stringify(get_map_value(msg, [:parent_id, "parent_id"]) || nested_parent_id)
+
+    channel_type = get_map_value(msg, [:type, "type"])
+
+    if thread_channel_type?(channel_type) or not is_nil(parent_id) do
+      %{
+        channel_id: channel_id,
+        parent_id: parent_id || channel_id,
+        external_room_id: parent_id || channel_id,
+        external_thread_id: channel_id,
+        delivery_external_room_id: channel_id
+      }
+    else
+      %{
+        channel_id: channel_id,
+        parent_id: nil,
+        external_room_id: channel_id,
+        external_thread_id: nil,
+        delivery_external_room_id: channel_id
+      }
+    end
+  end
+
+  defp thread_channel_type?(type), do: type in [10, 11, 12, :thread, "thread"]
 
   defp extract_media(%Nostrum.Struct.Message{attachments: attachments})
        when is_list(attachments) do

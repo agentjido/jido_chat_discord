@@ -30,7 +30,12 @@ defmodule Jido.Chat.Discord.SendOptions do
   @doc "Builds typed send options from keyword, map, or struct input."
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
-  def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
+
+  def new(opts) when is_map(opts) do
+    opts
+    |> normalize_generic_reply_reference()
+    |> then(&Jido.Chat.Schema.parse!(__MODULE__, @schema, &1))
+  end
 
   @doc "Builds transport-level options consumed by Discord transport clients."
   @spec transport_opts(t()) :: keyword()
@@ -46,4 +51,25 @@ defmodule Jido.Chat.Discord.SendOptions do
 
   defp maybe_kw(keyword, _key, nil), do: keyword
   defp maybe_kw(keyword, key, value), do: Keyword.put(keyword, key, value)
+
+  defp normalize_generic_reply_reference(opts) do
+    reply_to_id =
+      Map.get(opts, :reply_to_id) ||
+        Map.get(opts, "reply_to_id")
+
+    message_reference =
+      Map.get(opts, :message_reference) ||
+        Map.get(opts, "message_reference")
+
+    case {message_reference, reply_to_id} do
+      {nil, nil} ->
+        opts
+
+      {nil, value} ->
+        Map.put(opts, :message_reference, %{message_id: to_string(value)})
+
+      _ ->
+        opts
+    end
+  end
 end

@@ -6,11 +6,7 @@ defmodule Jido.Chat.Discord do
   """
 
   alias Jido.Chat.Discord.Adapter
-  alias Jido.Chat.Discord.Channel
 
   @spec adapter() :: module()
   def adapter, do: Adapter
-
-  @spec channel() :: module()
-  def channel, do: Channel
 end
