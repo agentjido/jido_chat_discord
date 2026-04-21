@@ -14,11 +14,15 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
 
     case message_api(opts).create(channel_id, message_opts) do
       {:ok, sent_message} ->
+        raw_message = normalize_struct(sent_message)
+
         {:ok,
          %{
-           message_id: map_get(sent_message, [:id, "id"]),
-           channel_id: map_get(sent_message, [:channel_id, "channel_id"]),
-           timestamp: map_get(sent_message, [:timestamp, "timestamp"])
+           message_id: map_get(raw_message, [:id, "id"]),
+           channel_id: map_get(raw_message, [:channel_id, "channel_id"]),
+           timestamp: map_get(raw_message, [:timestamp, "timestamp"]),
+           attachments: map_get(raw_message, [:attachments, "attachments"]) || [],
+           raw: raw_message
          }}
 
       {:error, reason} ->
@@ -183,6 +187,37 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
   end
 
   @impl true
+  def open_thread(channel_id, message_id, opts) do
+    channel_id = to_integer(channel_id)
+    message_id = to_integer(message_id)
+    name = Keyword.get(opts, :name, Keyword.get(opts, :topic_name, "Thread"))
+    api = channel_api(opts)
+
+    cond do
+      function_exported?(api, :start_thread_with_message, 4) ->
+        case apply(api, :start_thread_with_message, [channel_id, message_id, name, []]) do
+          {:ok, thread} -> {:ok, normalize_thread_open_result(thread)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      function_exported?(api, :start_thread_from_message, 4) ->
+        case apply(api, :start_thread_from_message, [channel_id, message_id, name, []]) do
+          {:ok, thread} -> {:ok, normalize_thread_open_result(thread)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      function_exported?(api, :create_message_thread, 4) ->
+        case apply(api, :create_message_thread, [channel_id, message_id, name, []]) do
+          {:ok, thread} -> {:ok, normalize_thread_open_result(thread)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :unsupported}
+    end
+  end
+
+  @impl true
   def fetch_message(channel_id, message_id, opts) do
     channel_id = to_integer(channel_id)
     message_id = to_integer(message_id)
@@ -227,12 +262,15 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
     do: Keyword.get(opts, :nostrum_interaction_api, Nostrum.Api.Interaction)
 
   defp build_message_opts(text, opts) do
-    %{content: text}
+    %{}
+    |> maybe_add_content(text)
     |> maybe_add_opt(:embeds, opts)
     |> maybe_add_opt(:components, opts)
     |> maybe_add_opt(:tts, opts)
     |> maybe_add_opt(:allowed_mentions, opts)
     |> maybe_add_opt(:message_reference, opts)
+    |> maybe_add_opt(:file, opts)
+    |> maybe_add_opt(:files, opts)
   end
 
   defp build_edit_opts(text, opts) do
@@ -249,6 +287,10 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
     end
   end
 
+  defp maybe_add_content(map, nil), do: map
+  defp maybe_add_content(map, ""), do: map
+  defp maybe_add_content(map, text), do: Map.put(map, :content, text)
+
   defp build_locator(nil, _direction), do: {}
 
   defp build_locator(cursor, :forward), do: {:after, to_integer(cursor)}
@@ -263,6 +305,15 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
       |> map_get([:id, "id"])
       |> maybe_to_string()
     end
+  end
+
+  defp normalize_thread_open_result(thread) do
+    %{
+      external_thread_id: maybe_to_string(map_get(thread, [:id, "id"])),
+      delivery_external_room_id: maybe_to_string(map_get(thread, [:id, "id"])),
+      parent_id: maybe_to_string(map_get(thread, [:parent_id, "parent_id"])),
+      name: map_get(thread, [:name, "name"])
+    }
   end
 
   defp to_integer(value) when is_integer(value), do: value

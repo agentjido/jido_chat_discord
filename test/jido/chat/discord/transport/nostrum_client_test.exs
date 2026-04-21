@@ -139,6 +139,18 @@ defmodule Jido.Chat.Discord.Transport.NostrumClientTest do
     assert result.timestamp == ~U[2024-01-31 12:00:00.000000Z]
   end
 
+  test "send_message/3 forwards file attachments and omits empty content" do
+    assert {:ok, _result} =
+             NostrumClient.send_message("123", nil,
+               nostrum_message_api: MockMessageAPI,
+               file: %{name: "bytes.txt", body: "hello"}
+             )
+
+    assert_received {:create, 123, opts}
+    refute Map.has_key?(opts, :content)
+    assert opts.file == %{name: "bytes.txt", body: "hello"}
+  end
+
   test "edit_message/4 calls Nostrum API and normalizes response" do
     assert {:ok, result} =
              NostrumClient.edit_message("123", "456", "updated",

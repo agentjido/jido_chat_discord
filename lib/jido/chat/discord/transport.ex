@@ -55,6 +55,12 @@ defmodule Jido.Chat.Discord.Transport do
   @callback list_threads(channel_id :: String.t() | integer(), opts :: keyword()) ::
               api_result()
 
+  @callback open_thread(
+              channel_id :: String.t() | integer(),
+              message_id :: String.t() | integer(),
+              opts :: keyword()
+            ) :: api_result()
+
   @callback fetch_message(
               channel_id :: String.t() | integer(),
               message_id :: String.t() | integer(),

@@ -32,7 +32,8 @@ defmodule Jido.Chat.Discord.MixProject do
   defp deps do
     [
       {:jido_chat, github: "agentjido/jido_chat", branch: "main"},
-      {:nostrum, "~> 0.10", runtime: false}
+      {:nostrum, "~> 0.10", runtime: false},
+      {:dotenvy, "~> 1.1", only: [:test]}
     ]
   end
 

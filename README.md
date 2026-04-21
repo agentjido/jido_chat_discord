@@ -10,8 +10,6 @@ It is part of the Elixir implementation aligned to the Vercel Chat SDK
 
 `Jido.Chat.Discord.Adapter` is the canonical adapter module and uses `Nostrum` as the Discord client.
 
-`Jido.Chat.Discord.Channel` is kept as a compatibility wrapper for legacy `Jido.Chat.Channel` integrations.
-
 ## Installation
 
 ```elixir
@@ -39,6 +37,37 @@ alias Jido.Chat.Discord.Adapter
 
 {:ok, sent} = Adapter.send_message(123, "hi")
 ```
+
+## Live Integration Test
+
+There is a live test module at:
+
+- `test/jido/chat/discord/live_integration_test.exs`
+
+It is skipped by default. To run it:
+
+1. Copy and fill local env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Run:
+
+```bash
+mix test test/jido/chat/discord/live_integration_test.exs --include live
+```
+
+Current live coverage includes:
+
+- send, edit, fetch, and delete
+- typing and metadata
+- stream fallback through core `Jido.Chat.Adapter.stream/4`
+- reply continuity through Discord `message_reference`
+- reaction add/remove
+- canonical single-file upload through `send_file/3`
+- canonical single-file post through core `post_message/4`
+- optional DM open when `DISCORD_TEST_USER_ID` is set
 
 ## Ingress Modes (`listener_child_specs/2`)
 
