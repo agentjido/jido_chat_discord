@@ -5,6 +5,11 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   alias Jido.Chat.Discord.Adapter
   alias Jido.Chat.FileUpload
 
+  setup_all do
+    Code.ensure_loaded!(Adapter)
+    :ok
+  end
+
   defmodule MockTransport do
     @behaviour Jido.Chat.Discord.Transport
 
@@ -526,8 +531,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
 
     assert ephemeral.used_fallback == false
 
-    assert_received {:interaction_response, "777", "tok",
-                     %{type: 4, data: %{content: "secret", flags: 64}}}
+    assert_received {:interaction_response, "777", "tok", %{type: 4, data: %{content: "secret", flags: 64}}}
   end
 
   test "open_modal/3 supports interaction context and errors when missing context" do

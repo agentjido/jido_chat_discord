@@ -74,15 +74,13 @@ defmodule Jido.Chat.Discord.GatewayWorker do
         delay = min(state.backoff_ms, state.max_backoff_ms)
         schedule_poll(delay)
 
-        {:noreply,
-         %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
+        {:noreply, %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
 
       {:error, _reason} ->
         delay = min(state.backoff_ms, state.max_backoff_ms)
         schedule_poll(delay)
 
-        {:noreply,
-         %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
+        {:noreply, %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
     end
   end
 
@@ -101,13 +99,11 @@ defmodule Jido.Chat.Discord.GatewayWorker do
   end
 
   defp build_sink_payload("MESSAGE_REACTION_ADD", payload) do
-    {:ok, reaction_envelope(payload, true),
-     [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
+    {:ok, reaction_envelope(payload, true), [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
   end
 
   defp build_sink_payload("MESSAGE_REACTION_REMOVE", payload) do
-    {:ok, reaction_envelope(payload, false),
-     [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
+    {:ok, reaction_envelope(payload, false), [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
   end
 
   defp build_sink_payload("INTERACTION_CREATE", payload) do

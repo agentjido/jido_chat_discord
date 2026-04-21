@@ -233,8 +233,7 @@ defmodule Jido.Chat.Discord.Adapter do
     with {:ok, result} <- transport(opts).open_thread(channel_id, message_id, opts) do
       {:ok,
        %{
-         external_thread_id:
-           stringify(result[:external_thread_id] || result["external_thread_id"]),
+         external_thread_id: stringify(result[:external_thread_id] || result["external_thread_id"]),
          delivery_external_room_id:
            stringify(result[:delivery_external_room_id] || result["delivery_external_room_id"]),
          parent_id: stringify(result[:parent_id] || result["parent_id"])
@@ -505,8 +504,6 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp route_parsed_event(_chat, _other, _opts, _request), do: {:error, :unsupported_message_type}
-
   defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
     do: {:ok, incoming}
 
@@ -622,7 +619,7 @@ defmodule Jido.Chat.Discord.Adapter do
   defp upload_input(_upload), do: {:error, :missing_file_source}
 
   defp upload_caption(%FileUpload{} = upload) do
-    metadata = upload.metadata || %{}
+    metadata = upload.metadata
 
     metadata[:caption] || metadata["caption"] || metadata[:alt_text] || metadata["alt_text"] ||
       metadata[:transcript] || metadata["transcript"]
@@ -642,8 +639,7 @@ defmodule Jido.Chat.Discord.Adapter do
         slash_payload = %{
           adapter_name: :discord,
           channel_id: stringify(channel_id),
-          command:
-            "/" <> to_string(map_get(payload, [:data, "data"]) |> map_get([:name, "name"])),
+          command: "/" <> to_string(map_get(payload, [:data, "data"]) |> map_get([:name, "name"])),
           text: slash_arguments(payload),
           user: user,
           raw: payload,
@@ -669,8 +665,7 @@ defmodule Jido.Chat.Discord.Adapter do
         action_payload = %{
           adapter_name: :discord,
           thread_id: "discord:#{channel_id}",
-          message_id:
-            stringify(map_get(data, [:message_id, "message_id"]) || map_get(message, [:id, "id"])),
+          message_id: stringify(map_get(data, [:message_id, "message_id"]) || map_get(message, [:id, "id"])),
           action_id: map_get(data, [:custom_id, "custom_id"]),
           value: inspect(map_get(data, [:values, "values"]) || %{}),
           user: user,
@@ -917,15 +912,9 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp parse_chat_type(_), do: :unknown
-
-  defp parse_map_chat_type(msg) when is_map(msg) do
-    parse_chat_type(msg)
-  end
-
   defp do_transform_incoming(msg) when is_map(msg) do
     route = thread_route(msg)
-    chat_type = parse_map_chat_type(msg)
+    chat_type = parse_chat_type(msg)
 
     {:ok,
      Incoming.new(%{

@@ -2,9 +2,9 @@
 
 `jido_chat_discord` is the Discord adapter package for `jido_chat`.
 
-## Experimental Status
+## Release Status
 
-This package is experimental and pre-1.0. APIs and behavior will change.
+This package is being prepared for the Jido 1.x chat package release line.
 It is part of the Elixir implementation aligned to the Vercel Chat SDK
 ([chat-sdk.dev/docs](https://www.chat-sdk.dev/docs)).
 
@@ -71,7 +71,7 @@ Current live coverage includes:
 
 ## Ingress Modes (`listener_child_specs/2`)
 
-`Jido.Chat.Discord.Adapter.listener_child_specs/2` supports:
+The Discord adapter ingress callback supports:
 
 - `ingress.mode = "webhook"`: no listener workers (`{:ok, []}`), host HTTP handles ingress.
 - `ingress.mode = "gateway"`:
