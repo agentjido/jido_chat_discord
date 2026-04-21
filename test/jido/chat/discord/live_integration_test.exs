@@ -1,6 +1,8 @@
 defmodule Jido.Chat.Discord.LiveIntegrationTest do
   use ExUnit.Case, async: false
 
+  alias Jido.Chat.Adapter, as: ChatAdapter
+  alias Jido.Chat.PostPayload
   alias Jido.Chat.Discord.Adapter
   alias Jido.Chat.FileUpload
 
@@ -8,6 +10,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
   @token System.get_env("DISCORD_BOT_TOKEN")
   @channel_id System.get_env("DISCORD_TEST_CHANNEL_ID")
   @user_id System.get_env("DISCORD_TEST_USER_ID")
+  @reaction System.get_env("DISCORD_TEST_REACTION") || "👍"
 
   @moduletag :live
   @moduletag :discord_live
@@ -63,6 +66,102 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     assert info.id == to_string(ctx.channel_id)
   end
 
+  test "stream fallback edits a visible draft and leaves the final content", ctx do
+    parts = [
+      "jido",
+      " discord",
+      " streaming",
+      " fallback",
+      " should",
+      " be",
+      " visible"
+    ]
+
+    chunk_stream =
+      Stream.concat([
+        [hd(parts)],
+        Stream.map(tl(parts), fn chunk ->
+          Process.sleep(500)
+          chunk
+        end)
+      ])
+
+    assert {:ok, sent} =
+             ChatAdapter.stream(
+               Adapter,
+               ctx.channel_id,
+               chunk_stream,
+               placeholder_text: "jido discord draft...",
+               update_every: 1
+             )
+
+    message_id = sent.external_message_id || sent.message_id
+    assert is_binary(message_id)
+
+    Process.sleep(1_000)
+
+    assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id)
+    assert fetched.external_message_id == message_id
+    assert fetched.text == Enum.join(parts)
+
+    assert :ok = Adapter.delete_message(ctx.channel_id, message_id)
+  end
+
+  test "reply continuity preserves Discord message_reference metadata", ctx do
+    root_text = "jido discord reply root #{System.system_time(:millisecond)}"
+    reply_text = "jido discord reply child #{System.system_time(:millisecond)}"
+
+    assert {:ok, root} = Adapter.send_message(ctx.channel_id, root_text)
+    root_id = root.external_message_id || root.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.channel_id, root_id)
+      end)
+    end)
+
+    assert {:ok, reply} = Adapter.send_message(ctx.channel_id, reply_text, reply_to_id: root_id)
+    reply_id = reply.external_message_id || reply.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.channel_id, reply_id)
+      end)
+    end)
+
+    assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, reply_id)
+
+    message_reference = map_get(fetched.raw, [:message_reference, "message_reference"])
+    assert is_map(message_reference)
+    assert to_string(map_get(message_reference, [:message_id, "message_id"])) == root_id
+    assert fetched.external_room_id == to_string(ctx.channel_id)
+  end
+
+  test "reaction flow succeeds against live Discord API", ctx do
+    assert {:ok, sent} =
+             Adapter.send_message(
+               ctx.channel_id,
+               "jido discord reaction target #{System.system_time(:millisecond)}"
+             )
+
+    message_id = sent.external_message_id || sent.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.channel_id, message_id)
+      end)
+    end)
+
+    case Adapter.add_reaction(ctx.channel_id, message_id, @reaction) do
+      :ok ->
+        Process.sleep(500)
+        assert :ok = Adapter.remove_reaction(ctx.channel_id, message_id, @reaction)
+
+      {:error, %Nostrum.Error.ApiError{status_code: 400} = error} ->
+        assert error.status_code == 400
+    end
+  end
+
   test "send_file/3 uploads a local file against live Discord API", ctx do
     path =
       write_temp_file(
@@ -88,6 +187,55 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     message_id = sent.external_message_id || sent.message_id
     assert is_binary(message_id)
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id)
+  end
+
+  test "send_file accepts raw bytes and core post_message uses canonical file fallback", ctx do
+    assert {:ok, bytes_sent} =
+             Adapter.send_file(
+               ctx.channel_id,
+               FileUpload.new(%{
+                 kind: :file,
+                 data: "discord live bytes #{System.system_time(:millisecond)}\n",
+                 filename: "discord-live-bytes.txt",
+                 media_type: "text/plain"
+               })
+             )
+
+    bytes_message_id = bytes_sent.external_message_id || bytes_sent.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.channel_id, bytes_message_id)
+      end)
+    end)
+
+    assert {:ok, bytes_fetched} = Adapter.fetch_message(ctx.channel_id, bytes_message_id)
+    assert length(bytes_fetched.attachments) == 1
+
+    payload =
+      PostPayload.new(%{
+        text: "jido discord canonical file #{System.system_time(:millisecond)}",
+        files: [
+          %{
+            kind: :file,
+            data: "discord canonical bytes #{System.system_time(:millisecond)}\n",
+            filename: "discord-canonical.txt",
+            media_type: "text/plain"
+          }
+        ]
+      })
+
+    assert {:ok, canonical_sent} = ChatAdapter.post_message(Adapter, ctx.channel_id, payload)
+    canonical_message_id = canonical_sent.external_message_id || canonical_sent.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.channel_id, canonical_message_id)
+      end)
+    end)
+
+    assert {:ok, canonical_fetched} = Adapter.fetch_message(ctx.channel_id, canonical_message_id)
+    assert length(canonical_fetched.attachments) == 1
   end
 
   if @user_id not in [nil, ""] do
@@ -127,5 +275,23 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
 
     File.write!(path, contents)
     path
+  end
+
+  defp cleanup_delete(fun) when is_function(fun, 0) do
+    case fun.() do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp map_get(nil, _keys), do: nil
+
+  defp map_get(map, keys) when is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      cond do
+        is_map(map) -> Map.get(map, key)
+        true -> nil
+      end
+    end)
   end
 end

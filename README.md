@@ -62,7 +62,11 @@ Current live coverage includes:
 
 - send, edit, fetch, and delete
 - typing and metadata
+- stream fallback through core `Jido.Chat.Adapter.stream/4`
+- reply continuity through Discord `message_reference`
+- reaction add/remove
 - canonical single-file upload through `send_file/3`
+- canonical single-file post through core `post_message/4`
 - optional DM open when `DISCORD_TEST_USER_ID` is set
 
 ## Ingress Modes (`listener_child_specs/2`)
