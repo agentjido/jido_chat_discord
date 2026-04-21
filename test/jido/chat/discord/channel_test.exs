@@ -5,6 +5,11 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   alias Jido.Chat.Discord.Adapter
   alias Jido.Chat.FileUpload
 
+  setup_all do
+    Code.ensure_loaded!(Adapter)
+    :ok
+  end
+
   defmodule MockTransport do
     @behaviour Jido.Chat.Discord.Transport
 
