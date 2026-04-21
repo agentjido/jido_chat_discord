@@ -526,8 +526,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
 
     assert ephemeral.used_fallback == false
 
-    assert_received {:interaction_response, "777", "tok",
-                     %{type: 4, data: %{content: "secret", flags: 64}}}
+    assert_received {:interaction_response, "777", "tok", %{type: 4, data: %{content: "secret", flags: 64}}}
   end
 
   test "open_modal/3 supports interaction context and errors when missing context" do

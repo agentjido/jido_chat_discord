@@ -59,10 +59,7 @@ defmodule Jido.Chat.Discord.GatewayWorkerTest do
 
   test "gateway worker emits message create payload through sink" do
     {:ok, pid} =
-      start_supervised(
-        {GatewayWorker,
-         bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []}
-      )
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
 
     event = %{
       event: "MESSAGE_CREATE",
@@ -82,10 +79,7 @@ defmodule Jido.Chat.Discord.GatewayWorkerTest do
 
   test "gateway worker normalizes reaction dispatch payload into EventEnvelope" do
     {:ok, pid} =
-      start_supervised(
-        {GatewayWorker,
-         bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []}
-      )
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
 
     :ok =
       GatewayWorker.emit(pid, %{

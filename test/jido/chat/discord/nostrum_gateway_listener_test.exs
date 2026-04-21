@@ -25,8 +25,7 @@ defmodule Jido.Chat.Discord.NostrumGatewayListenerTest do
 
     send(
       listener_pid,
-      {:event,
-       {:MESSAGE_CREATE, %PayloadStruct{id: "msg-1", nested: %PayloadStruct{id: "n1"}}, %{}}}
+      {:event, {:MESSAGE_CREATE, %PayloadStruct{id: "msg-1", nested: %PayloadStruct{id: "n1"}}, %{}}}
     )
 
     assert [{"MESSAGE_CREATE", payload}] = await_buffer_events(bridge_id)
@@ -41,9 +40,7 @@ defmodule Jido.Chat.Discord.NostrumGatewayListenerTest do
 
     start_supervised!({NostrumGatewayBuffer, bridge_id: bridge_id})
 
-    start_supervised!(
-      {NostrumGatewayListener, bridge_id: bridge_id, join_fun: fn _pid -> :ok end}
-    )
+    start_supervised!({NostrumGatewayListener, bridge_id: bridge_id, join_fun: fn _pid -> :ok end})
 
     listener_pid = NostrumGatewayListener.whereis(bridge_id)
     send(listener_pid, {:event, {:GUILD_CREATE, %{id: "guild-1"}, %{}}})

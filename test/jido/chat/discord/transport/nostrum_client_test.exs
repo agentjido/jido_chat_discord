@@ -153,9 +153,7 @@ defmodule Jido.Chat.Discord.Transport.NostrumClientTest do
 
   test "edit_message/4 calls Nostrum API and normalizes response" do
     assert {:ok, result} =
-             NostrumClient.edit_message("123", "456", "updated",
-               nostrum_message_api: MockMessageAPI
-             )
+             NostrumClient.edit_message("123", "456", "updated", nostrum_message_api: MockMessageAPI)
 
     assert_received {:edit, 123, 456, opts}
     assert opts.content == "updated"
@@ -167,9 +165,7 @@ defmodule Jido.Chat.Discord.Transport.NostrumClientTest do
 
   test "edit_message/4 handles boolean success response" do
     assert {:ok, result} =
-             NostrumClient.edit_message(123, 456, "updated",
-               nostrum_message_api: MockBooleanEditAPI
-             )
+             NostrumClient.edit_message(123, 456, "updated", nostrum_message_api: MockBooleanEditAPI)
 
     assert_received {:edit_bool, 123, 456, %{content: "updated"}}
     assert result.message_id == 456

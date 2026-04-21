@@ -20,8 +20,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
   end
 
   if @run_live and (is_nil(@token) or @token == "" or is_nil(@channel_id) or @channel_id == "") do
-    @moduletag skip:
-                 "set DISCORD_BOT_TOKEN and DISCORD_TEST_CHANNEL_ID when RUN_LIVE_DISCORD_TESTS=true"
+    @moduletag skip: "set DISCORD_BOT_TOKEN and DISCORD_TEST_CHANNEL_ID when RUN_LIVE_DISCORD_TESTS=true"
   end
 
   setup_all do

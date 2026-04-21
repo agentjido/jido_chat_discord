@@ -7,6 +7,7 @@ defmodule Jido.Chat.Discord do
 
   alias Jido.Chat.Discord.Adapter
 
+  @doc "Returns the canonical Discord adapter module."
   @spec adapter() :: module()
   def adapter, do: Adapter
 end
