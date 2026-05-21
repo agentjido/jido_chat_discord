@@ -15,8 +15,7 @@ It is part of the Elixir implementation aligned to the Vercel Chat SDK
 ```elixir
 def deps do
   [
-    {:jido_chat, github: "agentjido/jido_chat", branch: "main"},
-    {:jido_chat_discord, github: "agentjido/jido_chat_discord", branch: "main"}
+    {:jido_chat_discord, "~> 1.0"}
   ]
 end
 ```
