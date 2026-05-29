@@ -267,7 +267,8 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   test "send_message/3 delegates to transport" do
     assert {:ok, result} = Adapter.send_message("123", "hi", transport: MockTransport)
     assert_received {:send_message, "123", "hi", []}
-    assert result.message_id == 42
+    assert result.external_message_id == 42
+    assert result.message_id == "42"
   end
 
   test "send_message/3 maps generic reply_to_id to discord message_reference" do
