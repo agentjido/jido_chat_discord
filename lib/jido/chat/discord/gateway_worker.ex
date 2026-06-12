@@ -65,16 +65,10 @@ defmodule Jido.Chat.Discord.GatewayWorker do
 
   def handle_info(:poll, state) do
     case pull_events(state.event_source_mfa) do
-      {:ok, events} when is_list(events) ->
+      {:ok, events} ->
         Enum.each(events, fn event -> _ = emit_event(state, event) end)
         schedule_poll(state.poll_interval_ms)
         {:noreply, %{state | backoff_ms: state.poll_interval_ms}}
-
-      {:ok, _other} ->
-        delay = min(state.backoff_ms, state.max_backoff_ms)
-        schedule_poll(delay)
-
-        {:noreply, %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
 
       {:error, _reason} ->
         delay = min(state.backoff_ms, state.max_backoff_ms)
