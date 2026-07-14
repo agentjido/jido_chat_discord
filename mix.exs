@@ -14,6 +14,8 @@ defmodule Jido.Chat.Discord.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
+      # No patched cowlib Hex release is available yet.
+      hex: [ignore_advisories: ["CVE-2026-43969", "CVE-2026-43966"]],
       name: "Jido Chat Discord",
       description: @description,
       source_url: @source_url,
