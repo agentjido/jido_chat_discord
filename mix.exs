@@ -1,7 +1,7 @@
 defmodule Jido.Chat.Discord.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
+  @version "1.1.0"
   @source_url "https://github.com/agentjido/jido_chat_discord"
   @description "Discord adapter package for Jido.Chat"
 
