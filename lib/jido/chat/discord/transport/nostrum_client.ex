@@ -236,6 +236,25 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
   end
 
   @impl true
+  def download_file(url, opts) do
+    request_opts = [method: :get, url: url, redirect: true, decode_body: false]
+
+    case req(opts).request(request_opts) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 and is_binary(body) ->
+        {:ok, body}
+
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        {:error, {:invalid_download_body, body}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @impl true
   def fetch_thread(channel_id, opts) do
     fetch_metadata(channel_id, opts)
   end
@@ -257,6 +276,7 @@ defmodule Jido.Chat.Discord.Transport.NostrumClient do
   defp message_api(opts), do: Keyword.get(opts, :nostrum_message_api, Nostrum.Api.Message)
   defp channel_api(opts), do: Keyword.get(opts, :nostrum_channel_api, Nostrum.Api.Channel)
   defp user_api(opts), do: Keyword.get(opts, :nostrum_user_api, Nostrum.Api.User)
+  defp req(opts), do: Keyword.get(opts, :req, Req)
 
   defp interaction_api(opts),
     do: Keyword.get(opts, :nostrum_interaction_api, Nostrum.Api.Interaction)

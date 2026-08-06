@@ -123,6 +123,23 @@ defmodule Jido.Chat.Discord.Transport.NostrumClientTest do
     end
   end
 
+  defmodule MockReq do
+    def request(opts) do
+      send(self(), {:request, opts})
+
+      case opts[:url] do
+        "https://cdn.discordapp.com/file.png" ->
+          {:ok, %Req.Response{status: 200, body: "image bytes"}}
+
+        "https://cdn.discordapp.com/decoded" ->
+          {:ok, %Req.Response{status: 200, body: %{decoded: true}}}
+
+        "https://cdn.discordapp.com/missing" ->
+          {:ok, %Req.Response{status: 404, body: "missing"}}
+      end
+    end
+  end
+
   test "send_message/3 calls Nostrum API and normalizes response" do
     assert {:ok, result} =
              NostrumClient.send_message("123", "hello",
@@ -256,5 +273,21 @@ defmodule Jido.Chat.Discord.Transport.NostrumClientTest do
              )
 
     assert_received {:interaction_response, 1, "token-abc", %{type: 4, data: %{content: "hi"}}}
+  end
+
+  test "download_file/2 returns raw bytes and reports invalid responses" do
+    assert {:ok, "image bytes"} =
+             NostrumClient.download_file("https://cdn.discordapp.com/file.png", req: MockReq)
+
+    assert_received {:request, request_opts}
+    assert request_opts[:method] == :get
+    assert request_opts[:redirect] == true
+    assert request_opts[:decode_body] == false
+
+    assert {:error, {:invalid_download_body, %{decoded: true}}} =
+             NostrumClient.download_file("https://cdn.discordapp.com/decoded", req: MockReq)
+
+    assert {:error, {:http_error, 404, "missing"}} =
+             NostrumClient.download_file("https://cdn.discordapp.com/missing", req: MockReq)
   end
 end

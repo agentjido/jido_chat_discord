@@ -67,6 +67,9 @@ defmodule Jido.Chat.Discord.Transport do
               opts :: keyword()
             ) :: api_result()
 
+  @callback download_file(url :: String.t(), opts :: keyword()) ::
+              {:ok, binary()} | {:error, term()}
+
   @callback fetch_thread(channel_id :: String.t() | integer(), opts :: keyword()) :: api_result()
 
   @callback create_interaction_response(

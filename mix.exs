@@ -61,6 +61,7 @@ defmodule Jido.Chat.Discord.MixProject do
     [
       {:jido_chat, "~> 1.1"},
       {:nostrum, "~> 0.10", runtime: false},
+      {:req, "~> 0.6"},
       {:dotenvy, "~> 1.1", only: [:test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
