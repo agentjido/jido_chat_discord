@@ -11,6 +11,7 @@ defmodule Jido.Chat.Discord.Adapter do
     EventEnvelope,
     FileUpload,
     Incoming,
+    Media,
     Message,
     MessagePage,
     ModalResult,
@@ -52,6 +53,7 @@ defmodule Jido.Chat.Discord.Adapter do
       fetch_metadata: :native,
       fetch_thread: :native,
       fetch_message: :native,
+      fetch_media: :native,
       add_reaction: :native,
       remove_reaction: :native,
       post_ephemeral: :native,
@@ -219,6 +221,21 @@ defmodule Jido.Chat.Discord.Adapter do
          adapter_name: :discord,
          thread_id: "discord:#{incoming.external_room_id}"
        )}
+    end
+  end
+
+  @impl true
+  def fetch_media(reference, opts \\ []) do
+    opts = pick_opts(opts, [:transport, :req, :nostrum_message_api])
+
+    with {:ok, url, context} <- media_reference(reference) do
+      case transport(opts).download_file(url, opts) do
+        {:error, {:http_error, status, _body}} = error when status in [403, 404] ->
+          retry_media_download(context, opts, error)
+
+        result ->
+          result
+      end
     end
   end
 
@@ -979,35 +996,40 @@ defmodule Jido.Chat.Discord.Adapter do
 
   defp thread_channel_type?(type), do: type in [10, 11, 12, :thread, "thread"]
 
-  defp extract_media(%Nostrum.Struct.Message{attachments: attachments})
-       when is_list(attachments) do
-    attachments
-    |> Enum.map(&normalize_attachment/1)
-    |> Enum.reject(&is_nil/1)
-  end
-
   defp extract_media(msg) when is_map(msg) do
+    context = %{
+      channel_id: stringify(get_map_value(msg, [:channel_id, "channel_id"])),
+      message_id: stringify(get_map_value(msg, [:id, "id"]))
+    }
+
     msg
     |> get_map_value([:attachments, "attachments"])
-    |> normalize_attachments()
+    |> normalize_attachments(context)
   end
 
-  defp normalize_attachments(attachments) when is_list(attachments) do
+  defp normalize_attachments(attachments, context) when is_list(attachments) do
     attachments
-    |> Enum.map(&normalize_attachment/1)
+    |> Enum.map(&normalize_attachment(&1, context))
     |> Enum.reject(&is_nil/1)
   end
 
-  defp normalize_attachments(_), do: []
+  defp normalize_attachments(_, _context), do: []
 
-  defp normalize_attachment(%_{} = attachment),
-    do: attachment |> Map.from_struct() |> normalize_attachment()
+  defp normalize_attachment(%_{} = attachment, context),
+    do: attachment |> Map.from_struct() |> normalize_attachment(context)
 
-  defp normalize_attachment(attachment) when is_map(attachment) do
+  defp normalize_attachment(attachment, context) when is_map(attachment) do
     media_type = get_map_value(attachment, [:content_type, "content_type"])
     filename = get_map_value(attachment, [:filename, "filename", :name, "name"])
     url = get_map_value(attachment, [:url, "url", :proxy_url, "proxy_url"])
     kind = attachment_kind(media_type)
+
+    metadata =
+      context
+      |> Map.put(:attachment_id, stringify(get_map_value(attachment, [:id, "id"])))
+      |> Map.put(:filename, filename)
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
 
     %{
       kind: kind,
@@ -1016,13 +1038,64 @@ defmodule Jido.Chat.Discord.Adapter do
       filename: filename,
       size_bytes: get_map_value(attachment, [:size, "size"]),
       width: get_map_value(attachment, [:width, "width"]),
-      height: get_map_value(attachment, [:height, "height"])
+      height: get_map_value(attachment, [:height, "height"]),
+      metadata: metadata
     }
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
   end
 
-  defp normalize_attachment(_), do: nil
+  defp normalize_attachment(_, _context), do: nil
+
+  defp media_reference(url) when is_binary(url) and url != "", do: {:ok, url, nil}
+
+  defp media_reference(%Media{url: url, metadata: metadata})
+       when is_binary(url) and url != "" do
+    {:ok, url, metadata}
+  end
+
+  defp media_reference(_reference), do: {:error, :invalid_media_reference}
+
+  defp retry_media_download(context, opts, original_error) when is_map(context) do
+    channel_id = get_map_value(context, [:channel_id, "channel_id"])
+    message_id = get_map_value(context, [:message_id, "message_id"])
+
+    with true <- not is_nil(channel_id) and not is_nil(message_id),
+         {:ok, message} <- transport(opts).fetch_message(channel_id, message_id, opts),
+         {:ok, refreshed_url} <- refreshed_attachment_url(message, context),
+         result <- transport(opts).download_file(refreshed_url, opts) do
+      result
+    else
+      false -> original_error
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retry_media_download(_context, _opts, original_error), do: original_error
+
+  defp refreshed_attachment_url(message, context) when is_map(message) do
+    attachment_id = stringify(get_map_value(context, [:attachment_id, "attachment_id"]))
+    filename = get_map_value(context, [:filename, "filename"])
+    attachments = get_map_value(message, [:attachments, "attachments"]) || []
+
+    attachment =
+      Enum.find(attachments, fn item ->
+        not is_nil(attachment_id) and
+          stringify(get_map_value(item, [:id, "id"])) == attachment_id
+      end) ||
+        Enum.find(attachments, fn item ->
+          not is_nil(filename) and
+            get_map_value(item, [:filename, "filename", :name, "name"]) == filename
+        end)
+
+    case attachment && get_map_value(attachment, [:url, "url", :proxy_url, "proxy_url"]) do
+      url when is_binary(url) and url != "" -> {:ok, url}
+      _ -> {:error, :refreshed_attachment_not_found}
+    end
+  end
+
+  defp refreshed_attachment_url(_message, _context),
+    do: {:error, :refreshed_attachment_not_found}
 
   defp attachment_kind(media_type) when is_binary(media_type) do
     cond do

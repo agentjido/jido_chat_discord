@@ -4,6 +4,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   alias Jido.Chat
   alias Jido.Chat.Discord.Adapter
   alias Jido.Chat.FileUpload
+  alias Jido.Chat.Media
 
   setup_all do
     Code.ensure_loaded!(Adapter)
@@ -136,14 +137,43 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     def fetch_message(channel_id, message_id, _opts) do
       send(self(), {:fetch_message, channel_id, message_id})
 
+      attachments =
+        if message_id == "expired-message" do
+          [
+            %{
+              id: "attachment-1",
+              filename: "file.png",
+              content_type: "image/png",
+              url: "https://cdn.discordapp.com/refreshed.png"
+            }
+          ]
+        else
+          []
+        end
+
       {:ok,
        %{
          id: message_id,
          channel_id: channel_id,
          content: "single",
          guild_id: nil,
-         author: %{id: "444", username: "user", global_name: nil}
+         author: %{id: "444", username: "user", global_name: nil},
+         attachments: attachments
        }}
+    end
+
+    @impl true
+    def download_file("https://cdn.discordapp.com/expired.png", _opts) do
+      {:error, {:http_error, 403, "expired"}}
+    end
+
+    def download_file("https://cdn.discordapp.com/refreshed.png", _opts) do
+      {:ok, "refreshed bytes"}
+    end
+
+    def download_file(url, opts) do
+      send(self(), {:download_file, url, opts})
+      {:ok, "downloaded bytes"}
     end
 
     @impl true
@@ -179,6 +209,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     assert caps.edit_message == :native
     assert caps.delete_message == :native
     assert caps.open_thread == :native
+    assert caps.fetch_media == :native
   end
 
   test "adapter capabilities matrix declares native/fallback/unsupported surfaces" do
@@ -256,8 +287,61 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
 
     assert {:ok, incoming} = Adapter.transform_incoming(msg)
 
-    assert [%{kind: :image, url: "https://cdn.discordapp.com/file.png", media_type: "image/png"}] =
-             incoming.media
+    assert [media] = incoming.media
+    assert media.kind == :image
+    assert media.url == "https://cdn.discordapp.com/file.png"
+    assert media.media_type == "image/png"
+
+    assert media.metadata == %{
+             attachment_id: "9",
+             channel_id: "2",
+             filename: "file.png",
+             message_id: "1"
+           }
+  end
+
+  test "fetch_media/2 downloads raw URLs and media references" do
+    url = "https://cdn.discordapp.com/file.png"
+
+    assert {:ok, "downloaded bytes"} = Adapter.fetch_media(url, transport: MockTransport)
+    assert_received {:download_file, ^url, opts}
+    assert opts[:transport] == MockTransport
+
+    media = Media.new(%{url: url, filename: "file.png"})
+
+    assert {:ok, "downloaded bytes"} = Adapter.fetch_media(media, transport: MockTransport)
+    assert_received {:download_file, ^url, _opts}
+  end
+
+  test "fetch_media/2 refreshes an expired Discord attachment URL" do
+    media =
+      Media.new(%{
+        url: "https://cdn.discordapp.com/expired.png",
+        filename: "file.png",
+        metadata: %{
+          attachment_id: "attachment-1",
+          channel_id: "123",
+          filename: "file.png",
+          message_id: "expired-message"
+        }
+      })
+
+    assert {:ok, "refreshed bytes"} = Adapter.fetch_media(media, transport: MockTransport)
+    assert_received {:fetch_message, "123", "expired-message"}
+
+    filename_fallback = put_in(media.metadata.attachment_id, "stale-attachment-id")
+
+    assert {:ok, "refreshed bytes"} =
+             Adapter.fetch_media(filename_fallback, transport: MockTransport)
+
+    assert_received {:fetch_message, "123", "expired-message"}
+
+    assert {:error, {:http_error, 403, "expired"}} =
+             Adapter.fetch_media("https://cdn.discordapp.com/expired.png",
+               transport: MockTransport
+             )
+
+    refute_received {:fetch_message, _, _}
   end
 
   test "transform_incoming/1 unsupported input" do
