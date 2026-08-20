@@ -36,6 +36,34 @@ defmodule Jido.Chat.Discord.Adapter do
 
   alias Jido.Chat.Discord.Transport.NostrumClient
 
+  @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
+  @media_kind_extensions %{
+    ".aac" => :audio,
+    ".avi" => :video,
+    ".avif" => :image,
+    ".bmp" => :image,
+    ".flac" => :audio,
+    ".gif" => :image,
+    ".heic" => :image,
+    ".heif" => :image,
+    ".jpeg" => :image,
+    ".jpg" => :image,
+    ".m4a" => :audio,
+    ".m4v" => :video,
+    ".mkv" => :video,
+    ".mov" => :video,
+    ".mp3" => :audio,
+    ".mp4" => :video,
+    ".ogg" => :audio,
+    ".png" => :image,
+    ".svg" => :image,
+    ".tif" => :image,
+    ".tiff" => :image,
+    ".wav" => :audio,
+    ".webm" => :video,
+    ".webp" => :image
+  }
+
   @impl true
   def channel_type, do: :discord
 
@@ -1021,11 +1049,11 @@ defmodule Jido.Chat.Discord.Adapter do
   defp normalize_attachment(attachment, context) when is_map(attachment) do
     media_type =
       attachment
-      |> get_map_value([:content_type, "content_type"])
-      |> non_empty_string()
+      |> get_non_blank_map_value([:content_type, "content_type"])
+      |> normalize_media_type()
 
-    filename = get_map_value(attachment, [:filename, "filename", :name, "name"])
-    url = get_map_value(attachment, [:url, "url", :proxy_url, "proxy_url"])
+    filename = get_non_blank_map_value(attachment, [:filename, "filename", :name, "name"])
+    url = get_non_blank_map_value(attachment, [:url, "url", :proxy_url, "proxy_url"])
 
     metadata =
       context
@@ -1035,6 +1063,7 @@ defmodule Jido.Chat.Discord.Adapter do
       |> Map.new()
 
     Media.new(%{
+      kind: attachment_kind(media_type, filename, url),
       url: url,
       media_type: media_type,
       filename: filename,
@@ -1097,14 +1126,63 @@ defmodule Jido.Chat.Discord.Adapter do
   defp refreshed_attachment_url(_message, _context),
     do: {:error, :refreshed_attachment_not_found}
 
-  defp non_empty_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
+  defp attachment_kind(media_type, filename, url) do
+    media_kind_from_type(media_type) ||
+      media_kind_from_reference(filename) ||
+      media_kind_from_reference(url) ||
+      :file
+  end
+
+  defp media_kind_from_type(media_type) when is_binary(media_type) do
+    case canonical_media_type(media_type) do
+      "image/" <> _rest -> :image
+      "audio/" <> _rest -> :audio
+      "video/" <> _rest -> :video
+      _other -> :file
     end
   end
 
-  defp non_empty_string(_value), do: nil
+  defp media_kind_from_type(_media_type), do: nil
+
+  defp media_kind_from_reference(reference) when is_binary(reference) do
+    reference
+    |> URI.parse()
+    |> Map.get(:path)
+    |> case do
+      path when is_binary(path) -> path |> Path.extname() |> String.downcase()
+      _other -> ""
+    end
+    |> then(&Map.get(@media_kind_extensions, &1))
+  end
+
+  defp media_kind_from_reference(_reference), do: nil
+
+  defp normalize_media_type(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
+      do: trimmed,
+      else: nil
+  end
+
+  defp normalize_media_type(_value), do: nil
+
+  defp canonical_media_type(value) do
+    value
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp get_non_blank_map_value(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(map, key) do
+        value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
+        _other -> nil
+      end
+    end)
+  end
 
   defp normalize_channel_info(%ChannelInfo{} = info, _channel_id), do: info
 
