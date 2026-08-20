@@ -1019,10 +1019,13 @@ defmodule Jido.Chat.Discord.Adapter do
     do: attachment |> Map.from_struct() |> normalize_attachment(context)
 
   defp normalize_attachment(attachment, context) when is_map(attachment) do
-    media_type = get_map_value(attachment, [:content_type, "content_type"])
+    media_type =
+      attachment
+      |> get_map_value([:content_type, "content_type"])
+      |> non_empty_string()
+
     filename = get_map_value(attachment, [:filename, "filename", :name, "name"])
     url = get_map_value(attachment, [:url, "url", :proxy_url, "proxy_url"])
-    kind = attachment_kind(media_type)
 
     metadata =
       context
@@ -1031,8 +1034,7 @@ defmodule Jido.Chat.Discord.Adapter do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
 
-    %{
-      kind: kind,
+    Media.new(%{
       url: url,
       media_type: media_type,
       filename: filename,
@@ -1040,9 +1042,7 @@ defmodule Jido.Chat.Discord.Adapter do
       width: get_map_value(attachment, [:width, "width"]),
       height: get_map_value(attachment, [:height, "height"]),
       metadata: metadata
-    }
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-    |> Map.new()
+    })
   end
 
   defp normalize_attachment(_, _context), do: nil
@@ -1097,16 +1097,14 @@ defmodule Jido.Chat.Discord.Adapter do
   defp refreshed_attachment_url(_message, _context),
     do: {:error, :refreshed_attachment_not_found}
 
-  defp attachment_kind(media_type) when is_binary(media_type) do
-    cond do
-      String.starts_with?(media_type, "image/") -> :image
-      String.starts_with?(media_type, "audio/") -> :audio
-      String.starts_with?(media_type, "video/") -> :video
-      true -> :file
+  defp non_empty_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
     end
   end
 
-  defp attachment_kind(_), do: :file
+  defp non_empty_string(_value), do: nil
 
   defp normalize_channel_info(%ChannelInfo{} = info, _channel_id), do: info
 
