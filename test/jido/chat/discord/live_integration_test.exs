@@ -237,6 +237,34 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     assert length(canonical_fetched.attachments) == 1
   end
 
+  @tag :discord_live_mime
+  test "uploaded image keeps its kind and downloaded bytes when Discord omits MIME", ctx do
+    bytes = Base.decode64!("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+
+    assert {:ok, sent} =
+             Adapter.send_file(
+               ctx.channel_id,
+               FileUpload.new(%{
+                 kind: :image,
+                 data: bytes,
+                 filename: "jido-live-mime.gif"
+               })
+             )
+
+    message_id = sent.external_message_id || sent.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn -> Adapter.delete_message(ctx.channel_id, message_id) end)
+    end)
+
+    assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id)
+    assert [attachment] = fetched.attachments
+    assert attachment.kind == :image
+    assert attachment.filename == "jido-live-mime.gif"
+    assert attachment.media_type in [nil, "image/gif"]
+    assert {:ok, ^bytes} = Adapter.fetch_media(attachment.url)
+  end
+
   if @user_id not in [nil, ""] do
     test "open_dm/2 returns a DM channel when DISCORD_TEST_USER_ID is provided" do
       assert {:ok, dm_channel_id} = Adapter.open_dm(@user_id)

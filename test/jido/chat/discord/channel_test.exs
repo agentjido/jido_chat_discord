@@ -281,13 +281,38 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
           size: 256,
           width: 128,
           height: 128
+        },
+        %{
+          id: 10,
+          url: "https://cdn.discordapp.com/fallback.png",
+          filename: "fallback.png",
+          content_type: nil
+        },
+        %{
+          id: 11,
+          url: "https://cdn.discordapp.com/archive.unknown",
+          filename: "archive.unknown",
+          content_type: " "
+        },
+        %{
+          id: 12,
+          url: " ",
+          proxy_url: "https://cdn.discordapp.com/photo.PNG?token=signed",
+          filename: " ",
+          content_type: nil
+        },
+        %{
+          id: 13,
+          url: "https://cdn.discordapp.com/download/13",
+          filename: "misleading.png",
+          content_type: " application/pdf; charset=binary "
         }
       ]
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(msg)
 
-    assert [media] = incoming.media
+    assert [media, fallback, unknown, signed_url, misleading] = incoming.media
     assert media.kind == :image
     assert media.url == "https://cdn.discordapp.com/file.png"
     assert media.media_type == "image/png"
@@ -298,6 +323,22 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
              filename: "file.png",
              message_id: "1"
            }
+
+    assert fallback.kind == :image
+    assert fallback.filename == "fallback.png"
+    assert fallback.media_type == nil
+
+    assert unknown.kind == :file
+    assert unknown.filename == "archive.unknown"
+    assert unknown.media_type == nil
+
+    assert signed_url.kind == :image
+    assert signed_url.url == "https://cdn.discordapp.com/photo.PNG?token=signed"
+    assert signed_url.filename == nil
+    assert signed_url.media_type == nil
+
+    assert misleading.kind == :file
+    assert misleading.media_type == "application/pdf; charset=binary"
   end
 
   test "fetch_media/2 downloads raw URLs and media references" do
