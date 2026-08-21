@@ -10,6 +10,7 @@ defmodule Jido.Chat.Discord.GatewayWorker do
   use GenServer
 
   alias Jido.Chat.EventEnvelope
+  alias Jido.Chat.Discord.MessageLifecycle
 
   @type sink_mfa :: {module(), atom(), [term()]}
   @type source_mfa :: {module(), atom(), [term()]}
@@ -90,6 +91,18 @@ defmodule Jido.Chat.Discord.GatewayWorker do
 
   defp build_sink_payload("MESSAGE_CREATE", payload) do
     {:ok, payload, [mode: :payload, path: "/gateway/message_create", method: "GATEWAY"]}
+  end
+
+  defp build_sink_payload("MESSAGE_UPDATE", payload) do
+    with {:ok, envelope} <- MessageLifecycle.envelope(:message_updated, payload) do
+      {:ok, envelope, [mode: :payload, path: "/gateway/message_update", method: "GATEWAY"]}
+    end
+  end
+
+  defp build_sink_payload("MESSAGE_DELETE", payload) do
+    with {:ok, envelope} <- MessageLifecycle.envelope(:message_deleted, payload) do
+      {:ok, envelope, [mode: :payload, path: "/gateway/message_delete", method: "GATEWAY"]}
+    end
   end
 
   defp build_sink_payload("MESSAGE_REACTION_ADD", payload) do

@@ -33,6 +33,18 @@ defmodule Jido.Chat.Discord.NostrumGatewayListenerTest do
     assert payload.nested.id == "n1"
     refute Map.has_key?(payload, :__struct__)
     refute Map.has_key?(payload.nested, :__struct__)
+
+    send(listener_pid, {:event, {:MESSAGE_UPDATE, %{id: "msg-1", channel_id: "channel-1"}, %{}}})
+    assert [{"MESSAGE_UPDATE", %{id: "msg-1", channel_id: "channel-1"}}] = await_buffer_events(bridge_id)
+
+    updated_message = %{id: "msg-2", channel_id: "channel-1", content: "new content"}
+
+    send(listener_pid, {:event, {:MESSAGE_UPDATE, {%{id: "msg-1"}, updated_message}, %{}}})
+
+    assert [{"MESSAGE_UPDATE", ^updated_message}] = await_buffer_events(bridge_id)
+
+    send(listener_pid, {:event, {:MESSAGE_DELETE, %{id: "msg-1", channel_id: "channel-1"}, %{}}})
+    assert [{"MESSAGE_DELETE", %{id: "msg-1", channel_id: "channel-1"}}] = await_buffer_events(bridge_id)
   end
 
   test "listener ignores unsupported event names" do

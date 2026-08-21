@@ -338,7 +338,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     assert signed_url.media_type == nil
 
     assert misleading.kind == :file
-    assert misleading.media_type == "application/pdf; charset=binary"
+    assert misleading.media_type == "application/pdf"
   end
 
   test "fetch_media/2 downloads raw URLs and media references" do
@@ -645,6 +645,85 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     modal_close_event = %{event: "MODAL_CLOSE", payload: %{id: "abc", custom_id: "feedback"}}
     assert {:ok, _chat, _event} = Adapter.handle_gateway_event(chat, modal_close_event, [])
     assert_received :modal_close_hit
+  end
+
+  test "gateway helper routes message lifecycle events without changing message create" do
+    chat =
+      Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
+      |> Chat.on_message_updated(fn event -> send(self(), {:message_updated, event}) end)
+      |> Chat.on_message_deleted(fn event -> send(self(), {:message_deleted, event}) end)
+
+    update_payload = %{
+      "id" => "111",
+      "channel_id" => "222",
+      "edited_timestamp" => "2026-08-20T12:00:00Z",
+      "flags" => 4
+    }
+
+    assert {:ok, chat, %Jido.Chat.EventEnvelope{} = update_envelope} =
+             Adapter.handle_gateway_event(chat, %{"t" => "MESSAGE_UPDATE", "d" => update_payload}, [])
+
+    assert update_envelope.event_type == :message_updated
+    assert update_envelope.raw == update_payload
+    assert update_envelope.payload.message == nil
+    assert update_envelope.payload.raw == update_payload
+    assert_received {:message_updated, %Jido.Chat.MessageUpdatedEvent{} = updated}
+    assert updated.message_id == "111"
+    assert updated.message == nil
+
+    delete_payload = %{"id" => "111", "channel_id" => "222", "guild_id" => "guild-1"}
+
+    assert {:ok, chat, %Jido.Chat.EventEnvelope{} = delete_envelope} =
+             Adapter.handle_gateway_event(chat, {:MESSAGE_DELETE, delete_payload}, [])
+
+    assert delete_envelope.event_type == :message_deleted
+    assert delete_envelope.raw == delete_payload
+    assert delete_envelope.payload.author == nil
+    assert delete_envelope.payload.message == nil
+    assert_received {:message_deleted, %Jido.Chat.MessageDeletedEvent{} = deleted}
+    assert deleted.message_id == "111"
+
+    create_payload = %{
+      "id" => "112",
+      "channel_id" => "222",
+      "content" => "new message",
+      "author" => %{"id" => "444", "username" => "user"}
+    }
+
+    assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
+             Adapter.handle_gateway_event(chat, {:MESSAGE_CREATE, create_payload}, [])
+
+    assert incoming.text == "new message"
+    assert incoming.external_message_id == "112"
+
+    assert {:error, {:invalid_message_lifecycle_payload, [:channel_id]}} =
+             Adapter.handle_gateway_event(chat, {:MESSAGE_UPDATE, %{"id" => "111"}}, [])
+
+    assert {:error, {:invalid_message_lifecycle_payload, [:message_id]}} =
+             Adapter.handle_gateway_event(chat, {:MESSAGE_DELETE, %{"channel_id" => "222"}}, [])
+  end
+
+  test "gateway helper rejects invalid lifecycle payloads and still routes the next event" do
+    chat = Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
+
+    assert {:error, {:invalid_message_lifecycle_payload, [:payload]}} =
+             Adapter.handle_gateway_event(chat, %{"t" => "MESSAGE_UPDATE", "d" => "not-a-map"}, [])
+
+    assert {:error, {:invalid_message_lifecycle_payload, [:channel_id, :message_id]}} =
+             Adapter.handle_gateway_event(
+               chat,
+               %{"t" => "MESSAGE_UPDATE", "d" => %{"id" => %{}, "channel_id" => %{}}},
+               []
+             )
+
+    assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
+             Adapter.handle_gateway_event(
+               chat,
+               {:MESSAGE_CREATE, %{"id" => "112", "channel_id" => "222", "content" => "still routed"}},
+               []
+             )
+
+    assert incoming.text == "still routed"
   end
 
   test "post_ephemeral supports native interaction response path" do

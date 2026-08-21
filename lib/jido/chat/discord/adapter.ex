@@ -26,6 +26,7 @@ defmodule Jido.Chat.Discord.Adapter do
     EditOptions,
     FetchOptions,
     GatewayWorker,
+    MessageLifecycle,
     NostrumGatewayBuffer,
     NostrumGatewayListener,
     MetadataOptions,
@@ -519,15 +520,23 @@ defmodule Jido.Chat.Discord.Adapter do
       event[:event] || event["event"] || event[:type] || event["type"] ||
         event[:t] || event["t"]
 
-    payload = event[:payload] || event["payload"] || event
+    payload = event[:payload] || event["payload"] || event[:d] || event["d"] || event
 
     case normalize_event_name(event_name) do
       "MESSAGE_REACTION_ADD" -> process_gateway_reaction(chat, payload, true, opts)
       "MESSAGE_REACTION_REMOVE" -> process_gateway_reaction(chat, payload, false, opts)
+      "MESSAGE_UPDATE" -> process_gateway_lifecycle(chat, payload, :message_updated, opts)
+      "MESSAGE_DELETE" -> process_gateway_lifecycle(chat, payload, :message_deleted, opts)
       "MESSAGE_CREATE" -> handle_webhook(chat, payload, opts)
       "INTERACTION_CREATE" -> handle_webhook(chat, payload, opts)
       "MODAL_CLOSE" -> process_gateway_modal_close(chat, payload, opts)
       _ -> {:error, :unsupported_gateway_event}
+    end
+  end
+
+  defp process_gateway_lifecycle(chat, payload, event_type, opts) do
+    with {:ok, envelope} <- MessageLifecycle.envelope(event_type, payload) do
+      Jido.Chat.process_event(chat, :discord, envelope, opts)
     end
   end
 
