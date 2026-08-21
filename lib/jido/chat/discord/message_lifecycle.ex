@@ -1,8 +1,9 @@
 defmodule Jido.Chat.Discord.MessageLifecycle do
-  @moduledoc false
+  @moduledoc "Normalizes Discord message update and delete gateway events."
 
   alias Jido.Chat.{Author, EventEnvelope, MessageDeletedEvent, MessageUpdatedEvent}
 
+  @doc "Builds a typed lifecycle event envelope from a Discord gateway payload."
   @spec envelope(:message_updated | :message_deleted, map()) ::
           {:ok, EventEnvelope.t()}
           | {:error, {:invalid_message_lifecycle_payload, [atom()]}}

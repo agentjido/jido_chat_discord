@@ -338,7 +338,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     assert signed_url.media_type == nil
 
     assert misleading.kind == :file
-    assert misleading.media_type == "application/pdf; charset=binary"
+    assert misleading.media_type == "application/pdf"
   end
 
   test "fetch_media/2 downloads raw URLs and media references" do
