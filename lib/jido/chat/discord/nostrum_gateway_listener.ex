@@ -12,6 +12,8 @@ defmodule Jido.Chat.Discord.NostrumGatewayListener do
 
   @default_event_names [
     "MESSAGE_CREATE",
+    "MESSAGE_UPDATE",
+    "MESSAGE_DELETE",
     "MESSAGE_REACTION_ADD",
     "MESSAGE_REACTION_REMOVE",
     "INTERACTION_CREATE",
@@ -68,6 +70,14 @@ defmodule Jido.Chat.Discord.NostrumGatewayListener do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp normalize_gateway_event(
+         {:MESSAGE_UPDATE, {_old_message, updated_message}, ws_state},
+         allowed_event_names
+       )
+       when is_map(updated_message) do
+    normalize_gateway_event({:MESSAGE_UPDATE, updated_message, ws_state}, allowed_event_names)
+  end
 
   defp normalize_gateway_event({event_name, payload, _ws_state}, allowed_event_names)
        when is_map(payload) do

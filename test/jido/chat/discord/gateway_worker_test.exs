@@ -1,7 +1,7 @@
 defmodule Jido.Chat.Discord.GatewayWorkerTest do
   use ExUnit.Case, async: false
 
-  alias Jido.Chat.EventEnvelope
+  alias Jido.Chat.{EventEnvelope, MessageDeletedEvent, MessageUpdatedEvent}
   alias Jido.Chat.Discord.{Adapter, GatewayWorker}
 
   defmodule Sink do
@@ -96,6 +96,141 @@ defmodule Jido.Chat.Discord.GatewayWorkerTest do
     assert envelope.event_type == :reaction
     assert envelope.channel_id == "channel-1"
     assert opts[:mode] == :payload
+  end
+
+  test "gateway worker preserves a partial message update as a typed lifecycle event" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    payload = %{
+      "id" => "msg-1",
+      "channel_id" => "channel-1",
+      "edited_timestamp" => "2026-08-20T12:00:00Z",
+      "flags" => 4
+    }
+
+    :ok = GatewayWorker.emit(pid, %{"t" => "MESSAGE_UPDATE", "d" => payload})
+
+    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
+    assert envelope.event_type == :message_updated
+    assert envelope.thread_id == "discord:channel-1"
+    assert envelope.channel_id == "channel-1"
+    assert envelope.message_id == "msg-1"
+    assert envelope.raw == payload
+    assert %MessageUpdatedEvent{} = envelope.payload
+    assert envelope.payload.message == nil
+    assert envelope.payload.raw == payload
+    assert opts[:path] == "/gateway/message_update"
+  end
+
+  test "gateway worker treats null content as absent and preserves empty content" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    null_payload = %{"id" => "msg-null", "channel_id" => "channel-1", "content" => nil}
+    empty_payload = %{"id" => "msg-empty", "channel_id" => "channel-1", "content" => ""}
+
+    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, null_payload})
+    assert_receive {:sink_emit, %EventEnvelope{payload: null_update}, _opts}, 200
+    assert null_update.message == nil
+
+    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, empty_payload})
+    assert_receive {:sink_emit, %EventEnvelope{payload: empty_update}, _opts}, 200
+    assert empty_update.message.text == ""
+  end
+
+  test "gateway worker stays available after an invalid lifecycle payload" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, %{"id" => "msg-1"}})
+    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
+
+    :ok =
+      GatewayWorker.emit(pid, {
+        :MESSAGE_CREATE,
+        %{"id" => "msg-2", "channel_id" => "channel-1", "content" => "hello"}
+      })
+
+    assert_receive {:sink_emit, %{"id" => "msg-2"}, _opts}, 200
+  end
+
+  test "gateway worker stays available after scalar payloads and object-valued lifecycle IDs" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    :ok = GatewayWorker.emit(pid, %{"t" => "MESSAGE_UPDATE", "d" => "not-a-map"})
+    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
+
+    :ok =
+      GatewayWorker.emit(pid, %{
+        "t" => "MESSAGE_UPDATE",
+        "d" => %{"id" => %{}, "channel_id" => %{}}
+      })
+
+    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
+
+    :ok =
+      GatewayWorker.emit(pid, {
+        :MESSAGE_CREATE,
+        %{"id" => "msg-2", "channel_id" => "channel-1", "content" => "still routed"}
+      })
+
+    assert_receive {:sink_emit, %{"id" => "msg-2"}, _opts}, 200
+  end
+
+  test "gateway worker preserves populated message update details" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    payload = %{
+      "id" => 42,
+      "channel_id" => 7,
+      "content" => "edited text",
+      "edited_timestamp" => "2026-08-20T12:00:00Z",
+      "author" => %{"id" => 9, "username" => "Ada", "global_name" => "Ada Lovelace"}
+    }
+
+    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, payload})
+
+    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
+    assert envelope.event_type == :message_updated
+    assert envelope.thread_id == "discord:7"
+    assert envelope.channel_id == "7"
+    assert envelope.message_id == "42"
+    assert envelope.raw == payload
+    assert envelope.metadata == %{source: :gateway, gateway_event: "MESSAGE_UPDATE"}
+    assert %MessageUpdatedEvent{} = updated = envelope.payload
+    assert updated.author.user_id == "9"
+    assert updated.timestamp == "2026-08-20T12:00:00Z"
+    assert updated.message.id == "42"
+    assert updated.message.external_message_id == "42"
+    assert updated.message.thread_id == "discord:7"
+    assert updated.message.channel_id == "7"
+    assert updated.message.text == "edited text"
+    assert updated.message.author.user_name == "Ada"
+    assert updated.message.updated_at == "2026-08-20T12:00:00Z"
+    assert opts[:path] == "/gateway/message_update"
+  end
+
+  test "gateway worker preserves a message delete as a typed lifecycle event" do
+    {:ok, pid} =
+      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+
+    payload = %{"id" => "msg-1", "channel_id" => "channel-1", "guild_id" => "guild-1"}
+
+    :ok = GatewayWorker.emit(pid, {:MESSAGE_DELETE, payload})
+
+    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
+    assert envelope.event_type == :message_deleted
+    assert envelope.channel_id == "channel-1"
+    assert envelope.message_id == "msg-1"
+    assert envelope.raw == payload
+    assert %MessageDeletedEvent{} = envelope.payload
+    assert envelope.payload.author == nil
+    assert envelope.payload.message == nil
+    assert envelope.payload.raw == payload
+    assert opts[:path] == "/gateway/message_delete"
   end
 
   test "gateway worker polls event source and emits events through sink" do
