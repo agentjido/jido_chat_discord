@@ -15,7 +15,9 @@ defmodule Jido.Chat.Discord.MixProject do
       deps: deps(),
       aliases: aliases(),
       # No patched cowlib Hex release is available yet.
-      hex: [ignore_advisories: ["CVE-2026-43969", "CVE-2026-43966"]],
+      hex: [
+        ignore_advisories: ["CVE-2026-43971", "CVE-2026-43969", "CVE-2026-43966"]
+      ],
       name: "Jido Chat Discord",
       description: @description,
       source_url: @source_url,
