@@ -61,7 +61,7 @@ defmodule Jido.Chat.Discord.MixProject do
 
   defp deps do
     [
-      {:jido_chat, "~> 1.2"},
+      {:jido_chat, "~> 1.2 and >= 1.2.1"},
       {:nostrum, "~> 0.10", runtime: false},
       {:req, "~> 0.6"},
       {:dotenvy, "~> 1.1", only: [:test]},
