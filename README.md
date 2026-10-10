@@ -28,6 +28,10 @@ def deps do
 end
 ```
 
+## Local Documentation
+
+Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
+
 ## Usage
 
 ```elixir
