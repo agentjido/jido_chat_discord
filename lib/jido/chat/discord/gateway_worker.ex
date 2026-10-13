@@ -9,9 +9,6 @@ defmodule Jido.Chat.Discord.GatewayWorker do
 
   use GenServer
 
-  alias Jido.Chat.EventEnvelope
-  alias Jido.Chat.Discord.MessageLifecycle
-
   @type sink_mfa :: {module(), atom(), [term()]}
   @type source_mfa :: {module(), atom(), [term()]}
 
@@ -43,6 +40,7 @@ defmodule Jido.Chat.Discord.GatewayWorker do
 
     state = %{
       bridge_id: bridge_id,
+      binding: Keyword.fetch!(opts, :binding),
       sink_mfa: sink_mfa,
       sink_opts: Keyword.get(opts, :sink_opts, []),
       event_source_mfa: normalize_source_mfa(opts[:event_source_mfa]),
@@ -57,8 +55,8 @@ defmodule Jido.Chat.Discord.GatewayWorker do
 
   @impl true
   def handle_cast({:emit, event}, state) do
-    _ = emit_event(state, event)
-    {:noreply, state}
+    result = emit_event(state, event)
+    {:noreply, Map.put(state, :last_result, result)}
   end
 
   @impl true
@@ -67,9 +65,9 @@ defmodule Jido.Chat.Discord.GatewayWorker do
   def handle_info(:poll, state) do
     case pull_events(state.event_source_mfa) do
       {:ok, events} ->
-        Enum.each(events, fn event -> _ = emit_event(state, event) end)
+        result = emit_event(state, events)
         schedule_poll(state.poll_interval_ms)
-        {:noreply, %{state | backoff_ms: state.poll_interval_ms}}
+        {:noreply, state |> Map.put(:last_result, result) |> Map.put(:backoff_ms, state.poll_interval_ms)}
 
       {:error, _reason} ->
         delay = min(state.backoff_ms, state.max_backoff_ms)
@@ -80,141 +78,18 @@ defmodule Jido.Chat.Discord.GatewayWorker do
   end
 
   defp emit_event(state, event) do
-    with {:ok, event_name, payload} <- normalize_event(event),
-         {:ok, sink_payload, sink_event_opts} <- build_sink_payload(event_name, payload) do
-      invoke_sink(state.sink_mfa, sink_payload, state.sink_opts ++ sink_event_opts)
-    else
-      :ignore -> :ok
-      {:error, _reason} = error -> error
+    with {:ok, delivery} <- Jido.Chat.normalize_event(state.binding, event) do
+      case invoke_sink(state.sink_mfa, delivery, state.sink_opts) do
+        :ok -> :ok
+        {:ok, _} -> :ok
+        _ -> {:error, :sink_rejected}
+      end
     end
+  rescue
+    _ -> {:error, :sink_failed}
+  catch
+    _, _ -> {:error, :sink_failed}
   end
-
-  defp build_sink_payload("MESSAGE_CREATE", payload) do
-    {:ok, payload, [mode: :payload, path: "/gateway/message_create", method: "GATEWAY"]}
-  end
-
-  defp build_sink_payload("MESSAGE_UPDATE", payload) do
-    with {:ok, envelope} <- MessageLifecycle.envelope(:message_updated, payload) do
-      {:ok, envelope, [mode: :payload, path: "/gateway/message_update", method: "GATEWAY"]}
-    end
-  end
-
-  defp build_sink_payload("MESSAGE_DELETE", payload) do
-    with {:ok, envelope} <- MessageLifecycle.envelope(:message_deleted, payload) do
-      {:ok, envelope, [mode: :payload, path: "/gateway/message_delete", method: "GATEWAY"]}
-    end
-  end
-
-  defp build_sink_payload("MESSAGE_REACTION_ADD", payload) do
-    {:ok, reaction_envelope(payload, true), [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
-  end
-
-  defp build_sink_payload("MESSAGE_REACTION_REMOVE", payload) do
-    {:ok, reaction_envelope(payload, false), [mode: :payload, path: "/gateway/reaction", method: "GATEWAY"]}
-  end
-
-  defp build_sink_payload("INTERACTION_CREATE", payload) do
-    {:ok, payload, [mode: :payload, path: "/gateway/interaction", method: "GATEWAY"]}
-  end
-
-  defp build_sink_payload("THREAD_CREATE", payload) do
-    channel_id = map_get(payload, [:parent_id, "parent_id"]) || map_get(payload, [:id, "id"])
-
-    action_payload = %{
-      adapter_name: :discord,
-      thread_id: "discord:#{channel_id}",
-      message_id: nil,
-      action_id: "thread_create",
-      value: to_string(map_get(payload, [:id, "id"]) || ""),
-      user: %{},
-      raw: payload,
-      metadata: %{channel_id: to_string(channel_id)}
-    }
-
-    envelope =
-      EventEnvelope.new(%{
-        adapter_name: :discord,
-        event_type: :action,
-        thread_id: "discord:#{channel_id}",
-        channel_id: to_string(channel_id),
-        message_id: nil,
-        payload: action_payload,
-        raw: payload,
-        metadata: %{source: :gateway, gateway_event: "THREAD_CREATE"}
-      })
-
-    {:ok, envelope, [mode: :payload, path: "/gateway/thread_create", method: "GATEWAY"]}
-  end
-
-  defp build_sink_payload(_unsupported, _payload), do: :ignore
-
-  defp reaction_envelope(payload, added) do
-    channel_id = map_get(payload, [:channel_id, "channel_id"])
-    message_id = map_get(payload, [:message_id, "message_id"])
-    emoji = extract_emoji(payload)
-    user_id = map_get(payload, [:user_id, "user_id"])
-
-    EventEnvelope.new(%{
-      adapter_name: :discord,
-      event_type: :reaction,
-      thread_id: "discord:#{channel_id}",
-      channel_id: to_string(channel_id),
-      message_id: to_string(message_id),
-      payload: %{
-        adapter_name: :discord,
-        thread_id: "discord:#{channel_id}",
-        message_id: to_string(message_id),
-        emoji: emoji,
-        added: added,
-        user: %{user_id: to_string(user_id || "unknown")},
-        raw: payload,
-        metadata: %{channel_id: channel_id}
-      },
-      raw: payload,
-      metadata: %{
-        source: :gateway,
-        gateway_event: if(added, do: "MESSAGE_REACTION_ADD", else: "MESSAGE_REACTION_REMOVE")
-      }
-    })
-  end
-
-  defp extract_emoji(payload) when is_map(payload) do
-    emoji = map_get(payload, [:emoji, "emoji"]) || %{}
-    map_get(emoji, [:name, "name"]) || map_get(emoji, [:id, "id"]) |> to_string_safe()
-  end
-
-  defp extract_emoji(_), do: ""
-
-  defp normalize_event({event_name, payload}) when is_map(payload) do
-    {:ok, normalize_event_name(event_name), payload}
-  end
-
-  defp normalize_event(%{} = event) do
-    cond do
-      is_map(Map.get(event, "d")) or is_map(Map.get(event, :d)) ->
-        payload = Map.get(event, "d") || Map.get(event, :d)
-        event_name = Map.get(event, "t") || Map.get(event, :t)
-        {:ok, normalize_event_name(event_name), payload}
-
-      is_map(Map.get(event, "payload")) or is_map(Map.get(event, :payload)) ->
-        payload = Map.get(event, "payload") || Map.get(event, :payload)
-        event_name = Map.get(event, "event") || Map.get(event, :event)
-        {:ok, normalize_event_name(event_name), payload}
-
-      true ->
-        {:error, :invalid_event}
-    end
-  end
-
-  defp normalize_event(_), do: {:error, :invalid_event}
-
-  defp normalize_event_name(event_name) when is_atom(event_name),
-    do: event_name |> Atom.to_string() |> String.upcase()
-
-  defp normalize_event_name(event_name) when is_binary(event_name),
-    do: String.upcase(event_name)
-
-  defp normalize_event_name(_), do: ""
 
   defp invoke_sink({module, function, base_args}, payload, opts)
        when is_atom(module) and is_atom(function) and is_list(base_args) and is_list(opts) do
@@ -257,14 +132,4 @@ defmodule Jido.Chat.Discord.GatewayWorker do
   end
 
   defp normalize_pos_integer(_value, default), do: default
-
-  defp map_get(map, keys) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, fn key -> Map.get(map, key) end)
-  end
-
-  defp map_get(_other, _keys), do: nil
-
-  defp to_string_safe(nil), do: ""
-  defp to_string_safe(value) when is_binary(value), do: value
-  defp to_string_safe(value), do: to_string(value)
 end
