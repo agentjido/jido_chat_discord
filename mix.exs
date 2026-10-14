@@ -16,7 +16,7 @@ defmodule Jido.Chat.Discord.MixProject do
       aliases: aliases(),
       # No patched cowlib Hex release is available yet.
       hex: [
-        ignore_advisories: ["CVE-2026-43971", "CVE-2026-43969", "CVE-2026-43966"]
+        ignore_advisories: ["CVE-2026-43966"]
       ],
       name: "Jido Chat Discord",
       description: @description,
@@ -63,6 +63,12 @@ defmodule Jido.Chat.Discord.MixProject do
     case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
       {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
         {:jido_chat, path: Path.expand(path, __DIR__), override: true}
+
+      {env, _} when env in [:dev, :test] ->
+        {:jido_chat,
+         git: "https://github.com/agentjido/jido_chat.git",
+         ref: "2a9c21a860cb8c5f1069a865a981a8be035f56c0",
+         override: true}
 
       _ ->
         {:jido_chat, "~> 2.0"}
