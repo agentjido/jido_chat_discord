@@ -307,4 +307,31 @@ defmodule Jido.Chat.Discord.ProtocolTest do
     refute_received :enumerated
     assert calls() == []
   end
+
+  test "HTTP mapping uses the signed body and requires a captured public key" do
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "signed-body", public_key: Base.encode16(public, case: :lower))
+    signed = %{"id" => "signed", "type" => 2, "channel_id" => "C1", "data" => %{"name" => "help"}}
+    raw = Jason.encode!(signed)
+    timestamp = "1706745600"
+    signature = :crypto.sign(:eddsa, :none, timestamp <> raw, [private, :ed25519]) |> Base.encode16(case: :lower)
+
+    request =
+      Jido.Chat.WebhookRequest.new(%{
+        payload: Map.put(signed, "id", "unsigned"),
+        raw: raw,
+        headers: %{"x-signature-ed25519" => signature, "x-signature-timestamp" => timestamp}
+      })
+
+    assert {:ok, %{signals: [fact]}} = Jido.Chat.normalize_event(binding, request)
+    assert fact.data["interaction_id"] == "signed"
+    {:ok, missing} = Jido.Chat.bind(Adapter, id: "missing-key", public_key: nil)
+    assert {:error, :missing_public_key} = Adapter.verify_webhook(request, missing.options)
+    assert {:error, _} = Jido.Chat.normalize_event(missing, request)
+    assert :ets.tab2list(missing.resources) == []
+    {:ok, other} = Jido.Chat.bind(Adapter, id: "other")
+    assert {:ok, first} = Jido.Chat.normalize_event(binding, event("MessageReceived"))
+    assert {:ok, second} = Jido.Chat.normalize_event(other, event("MessageReceived"))
+    refute first.id == second.id
+  end
 end

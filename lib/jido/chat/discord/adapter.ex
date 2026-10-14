@@ -71,7 +71,9 @@ defmodule Jido.Chat.Discord.Adapter do
 
   @impl true
   def normalize_event(binding, %WebhookRequest{} = request) do
-    with :ok <- verify_webhook(request, binding.options), do: normalize_event(binding, request.payload)
+    with :ok <- verify_webhook(request, binding.options),
+         {:ok, payload} <- verified_payload(request, binding.options),
+         do: normalize_event(binding, payload)
   end
 
   def normalize_event(binding, input) do
@@ -82,7 +84,7 @@ defmodule Jido.Chat.Discord.Adapter do
       try do
         events = if is_list(input), do: input, else: [input]
         items = Enum.map(events, &native_input/1)
-        delivery = "discord:" <> native_digest(native_canonical(items))
+        delivery = "discord:" <> native_digest({binding.id, native_canonical(items)})
         context = %{binding: binding, delivery: delivery, tracker: tracker}
         with {:ok, facts} <- native_items(context, items), do: Jido.Chat.Delivery.new(binding, delivery, facts)
       rescue
@@ -790,7 +792,7 @@ defmodule Jido.Chat.Discord.Adapter do
         else: opts[:discord_public_key] || Application.get_env(:jido_chat_discord, :discord_public_key)
 
     if is_nil(public_key) do
-      :ok
+      {:error, :missing_public_key}
     else
       verify_discord_signature(request, public_key, opts)
     end
@@ -1475,5 +1477,14 @@ defmodule Jido.Chat.Discord.Adapter do
 
   defp nostrum_gateway_listener_opts(bridge_id, ingress) do
     [bridge_id: bridge_id, event_names: get_map_value(ingress, [:event_names, "event_names"])]
+  end
+
+  defp verified_payload(request, opts) do
+    body = opts[:raw_body] || request.metadata[:raw_body] || request.metadata["raw_body"] || request.raw
+
+    case Jason.decode(body) do
+      {:ok, %{} = payload} -> {:ok, payload}
+      _ -> Jido.Chat.Signal.Policy.error(:invalid_delivery)
+    end
   end
 end

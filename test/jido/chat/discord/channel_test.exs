@@ -562,8 +562,6 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   end
 
   test "handle_webhook/3 normalizes and routes through Jido.Chat.process_message/5" do
-    binding = captured_binding()
-
     payload = %{
       "id" => "111",
       "channel_id" => "222",
@@ -572,7 +570,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
       "mentions" => [%{"id" => "bot"}]
     }
 
-    request = Jido.Chat.WebhookRequest.new(%{payload: payload})
+    {binding, request} = signed_request(payload)
     {:ok, unit} = Chat.normalize_event(binding, request)
     {:ok, handlers} = Jido.Chat.Handlers.new()
 
@@ -747,8 +745,8 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   end
 
   test "interaction ping parse and format path returns noop and pong body" do
-    request = Jido.Chat.WebhookRequest.new(%{payload: %{"type" => 1}})
-    assert {:ok, %{signals: []} = unit} = Chat.normalize_event(captured_binding(), request)
+    {binding, request} = signed_request(%{"type" => 1})
+    assert {:ok, %{signals: []} = unit} = Chat.normalize_event(binding, request)
     response = Adapter.format_webhook_response({:ok, unit}, request: request)
     assert response.body == %{type: 1}
   end
@@ -766,5 +764,22 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
 
     assert action.type == "jido.chat.action.received"
     assert action.data["message_id"] == "msg-from-payload"
+  end
+
+  defp signed_request(payload) do
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    raw = Jason.encode!(payload)
+    timestamp = "1706745600"
+    signature = :crypto.sign(:eddsa, :none, timestamp <> raw, [private, :ed25519]) |> Base.encode16(case: :lower)
+    binding = captured_binding(public_key: Base.encode16(public, case: :lower))
+
+    request =
+      Jido.Chat.WebhookRequest.new(%{
+        payload: payload,
+        raw: raw,
+        headers: %{"x-signature-ed25519" => signature, "x-signature-timestamp" => timestamp}
+      })
+
+    {binding, request}
   end
 end
