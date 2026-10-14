@@ -65,7 +65,7 @@ defmodule Jido.Chat.Discord.MixProject do
         {:jido_chat, path: Path.expand(path, __DIR__), override: true}
 
       _ ->
-        {:jido_chat, "~> 1.2 and >= 1.2.1"}
+        {:jido_chat, "~> 2.0"}
     end
   end
 
