@@ -8,96 +8,64 @@
 [![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
 
-`jido_chat_discord` is the Discord adapter package for `jido_chat`.
+`jido_chat_discord` provides the `Jido.Chat.Discord.Adapter` adapter for the public Chat Signal contract.
 
-## Release Status
+## Release status
 
-This package is being prepared for the Jido 1.x chat package release line.
-It is part of the Elixir implementation aligned to the Vercel Chat SDK
-([chat-sdk.dev/docs](https://www.chat-sdk.dev/docs)).
+This branch proposes version 2.0. It changes the public communication API.
+Use the immutable PR source commits for review and tests. The new Hex releases
+are not yet published. Production requires Chat 2.0 and compatible upstream
+Signal releases. The dependency helpers keep source pins in development and test.
 
-`Jido.Chat.Discord.Adapter` is the canonical adapter module and uses `Nostrum` as the Discord client.
+## Typed operations
 
-## Installation
-
-```elixir
-def deps do
-  [
-    {:jido_chat_discord, "~> 1.0"}
-  ]
-end
-```
-
-## Local Documentation
-
-Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
-
-## Usage
+The application supplies private binding options and a provider room ID:
 
 ```elixir
-alias Jido.Chat.Discord.Adapter
-
-{:ok, incoming} =
-  Adapter.transform_incoming(%{
-    channel_id: 123,
-    id: 456,
-    content: "hello",
-    guild_id: 999,
-    author: %{id: 321, username: "alice", global_name: "Alice"}
-  })
-
-{:ok, sent} = Adapter.send_message(123, "hi")
+{:ok, binding} = Jido.Chat.bind(Jido.Chat.Discord.Adapter, private_binding_options)
+request = Jido.Chat.Signal.SendMessage.new!(%{
+  "request_id" => "request-1",
+  "room_id" => provider_room_id,
+  "text" => "Hello"
+})
+{:ok, result} = Jido.Chat.execute(binding, request)
 ```
 
-## Live Integration Test
+The result is an OperationCompleted or OperationFailed signal. Repeating an
+admitted request uses its saved result. Private tokens, clients and resources
+stay outside signal data. Unsupported operations return a defined typed result.
 
-There is a live test module at:
+## Inbound delivery
 
-- `test/jido/chat/discord/live_integration_test.exs`
-
-It is skipped by default. To run it:
-
-1. Copy and fill local env file:
-
-```bash
-cp .env.example .env
-```
-
-2. Run:
-
-```bash
-mix test test/jido/chat/discord/live_integration_test.exs --include live
-```
-
-Current live coverage includes:
-
-- send, edit, fetch, and delete
-- typing and metadata
-- stream fallback through core `Jido.Chat.Adapter.stream/4`
-- reply continuity through Discord `message_reference`
-- reaction add/remove
-- canonical single-file upload through `send_file/3`
-- canonical single-file post through core `post_message/4`
-- optional DM open when `DISCORD_TEST_USER_ID` is set
-
-## Ingress Modes (`listener_child_specs/2`)
-
-The Discord adapter ingress callback supports:
-
-- `ingress.mode = "webhook"`: no listener workers (`{:ok, []}`), host HTTP handles ingress.
-- `ingress.mode = "gateway"`:
-  - default `ingress.source = "nostrum"`: starts
-    - `NostrumGatewayBuffer`
-    - `NostrumGatewayListener` (subscribes to `Nostrum.ConsumerGroup`)
-    - `GatewayWorker` (consumes buffered events and emits via `sink_mfa`)
-  - optional `ingress.source = "mfa"` with `ingress.event_source_mfa`.
-
-Example:
+Normalize one complete verified provider input unit with the configured binding:
 
 ```elixir
-{:ok, specs} =
-  Jido.Chat.Discord.Adapter.listener_child_specs("bridge_dc",
-    ingress: %{mode: "gateway", source: "nostrum"},
-    sink_mfa: {Jido.Messaging.IngressSink, :emit, [MyApp.Messaging, "bridge_dc"]}
-  )
+{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
+{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
 ```
+
+The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
+and explicit item failures. Membership evidence does not create grants or start
+message handlers. A rejected listener sink follows the provider checkpoint rule.
+Configure protocol version 1 before starting provider listeners.
+
+## Operation support
+
+Native: `send_message`, `send_file`, `edit_message`, `delete_message`, `start_typing`, `fetch_metadata`, `fetch_thread`, `fetch_message`, `fetch_media`, `add_reaction`, `remove_reaction`, `post_ephemeral`, `open_modal`, `fetch_messages`, `fetch_channel_messages`, `list_threads`, `open_thread`, `open_dm`.
+
+Fallback: `post_message`, `fetch_subject`, `post_channel_message`, `stream`.
+
+All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
+
+## Provider setup
+
+Discord uses an injectable transport and optional Nostrum Gateway ingress. Gateway items use complete typed deliveries and stable retry identity. The user accepted the exact Cowlib/Gun advisory in the migration report.
+
+## Checks and migration
+
+Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
+provider fixtures do not need credentials or live traffic.
+
+See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
+for API mappings, the complete runnable local example, limits, release order and
+rollback pins. Run `mix docs` to build this package's API documentation.
