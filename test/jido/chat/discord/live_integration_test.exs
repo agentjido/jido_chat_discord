@@ -1,7 +1,6 @@
 defmodule Jido.Chat.Discord.LiveIntegrationTest do
   use ExUnit.Case, async: false
 
-  alias Jido.Chat.Adapter, as: ChatAdapter
   alias Jido.Chat.PostPayload
   alias Jido.Chat.Discord.Adapter
   alias Jido.Chat.FileUpload
@@ -21,6 +20,31 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
 
   if @run_live and (is_nil(@token) or @token == "" or is_nil(@channel_id) or @channel_id == "") do
     @moduletag skip: "set DISCORD_BOT_TOKEN and DISCORD_TEST_CHANNEL_ID when RUN_LIVE_DISCORD_TESTS=true"
+  end
+
+  defp native_stream(adapter, room, chunks, opts) do
+    {:ok, binding} = Jido.Chat.bind(adapter, [id: "live-discord"] ++ opts)
+    {:ok, ref} = Jido.Chat.put_resource(binding, "stream", chunks)
+
+    parent =
+      Jido.Chat.Signal.Stream.new!(%{"request_id" => "stream", "room_id" => to_string(room), "resource_ref" => ref})
+
+    with {:ok, result} <- Jido.Chat.execute(binding, parent), do: {:ok, %{message_id: result.data["result"]["id"]}}
+  end
+
+  defp native_post(adapter, room, payload) do
+    {:ok, binding} = Jido.Chat.bind(adapter, id: "live-discord-post")
+    [file] = PostPayload.upload_candidates(payload)
+    {:ok, ref} = Jido.Chat.put_resource(binding, "file", file)
+
+    parent =
+      Jido.Chat.Signal.PostMessage.new!(%{
+        "request_id" => "file",
+        "room_id" => to_string(room),
+        "content" => %{"kind" => "media", "resource_ref" => ref, "caption" => payload.text}
+      })
+
+    with {:ok, result} <- Jido.Chat.execute(binding, parent), do: {:ok, %{message_id: result.data["result"]["id"]}}
   end
 
   setup_all do
@@ -45,15 +69,15 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     text = "jido discord live #{System.system_time(:millisecond)}"
 
     assert {:ok, sent} = Adapter.send_message(ctx.channel_id, text)
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent.message_id
     assert is_binary(message_id)
 
     assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id)
-    assert fetched.external_message_id == message_id
-    assert fetched.external_room_id == to_string(ctx.channel_id)
+    assert fetched.id == message_id
+    assert fetched.room_id == to_string(ctx.channel_id)
 
     assert {:ok, edited} = Adapter.edit_message(ctx.channel_id, message_id, text <> " (edited)")
-    assert edited.external_message_id == message_id
+    assert edited.message_id == message_id
 
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id)
   end
@@ -86,7 +110,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
       ])
 
     assert {:ok, sent} =
-             ChatAdapter.stream(
+             native_stream(
                Adapter,
                ctx.channel_id,
                chunk_stream,
@@ -94,13 +118,13 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
                update_every: 1
              )
 
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent.message_id
     assert is_binary(message_id)
 
     Process.sleep(1_000)
 
     assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id)
-    assert fetched.external_message_id == message_id
+    assert fetched.id == message_id
     assert fetched.text == Enum.join(parts)
 
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id)
@@ -111,7 +135,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     reply_text = "jido discord reply child #{System.system_time(:millisecond)}"
 
     assert {:ok, root} = Adapter.send_message(ctx.channel_id, root_text)
-    root_id = root.external_message_id || root.message_id
+    root_id = root.message_id
 
     on_exit(fn ->
       cleanup_delete(fn ->
@@ -120,7 +144,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     end)
 
     assert {:ok, reply} = Adapter.send_message(ctx.channel_id, reply_text, reply_to_id: root_id)
-    reply_id = reply.external_message_id || reply.message_id
+    reply_id = reply.message_id
 
     on_exit(fn ->
       cleanup_delete(fn ->
@@ -133,7 +157,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     message_reference = map_get(fetched.raw, [:message_reference, "message_reference"])
     assert is_map(message_reference)
     assert to_string(map_get(message_reference, [:message_id, "message_id"])) == root_id
-    assert fetched.external_room_id == to_string(ctx.channel_id)
+    assert fetched.room_id == to_string(ctx.channel_id)
   end
 
   test "reaction flow succeeds against live Discord API", ctx do
@@ -143,7 +167,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
                "jido discord reaction target #{System.system_time(:millisecond)}"
              )
 
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent.message_id
 
     on_exit(fn ->
       cleanup_delete(fn ->
@@ -183,7 +207,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
                })
              )
 
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent.message_id
     assert is_binary(message_id)
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id)
   end
@@ -200,7 +224,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
                })
              )
 
-    bytes_message_id = bytes_sent.external_message_id || bytes_sent.message_id
+    bytes_message_id = bytes_sent.message_id
 
     on_exit(fn ->
       cleanup_delete(fn ->
@@ -224,8 +248,8 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
         ]
       })
 
-    assert {:ok, canonical_sent} = ChatAdapter.post_message(Adapter, ctx.channel_id, payload)
-    canonical_message_id = canonical_sent.external_message_id || canonical_sent.message_id
+    assert {:ok, canonical_sent} = native_post(Adapter, ctx.channel_id, payload)
+    canonical_message_id = canonical_sent.message_id
 
     on_exit(fn ->
       cleanup_delete(fn ->
@@ -251,7 +275,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
                })
              )
 
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent.message_id
 
     on_exit(fn ->
       cleanup_delete(fn -> Adapter.delete_message(ctx.channel_id, message_id) end)

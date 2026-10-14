@@ -201,6 +201,36 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
     defp attachment_content_type(%{name: name}), do: MIME.from_path(name)
   end
 
+  defp captured_binding(opts \\ []) do
+    {:ok, binding} = Chat.bind(Adapter, [id: "discord-tests", transport: MockTransport, bot_id: "bot"] ++ opts)
+    binding
+  end
+
+  defp native_message(payload) do
+    binding = captured_binding()
+    assert {:ok, %{signals: [fact]}} = Chat.normalize_event(binding, payload)
+    assert fact.type == "jido.chat.message.received"
+    assert {:ok, json} = Jido.Signal.Serialization.serialize(fact)
+    catalog = Jido.Signal.Catalog.new!(Chat.signal_definitions())
+    assert {:ok, ^fact} = Jido.Signal.Catalog.decode(catalog, json)
+    assert fact.source == binding.source
+    assert fact.subject == Jido.Chat.Signal.Identity.conversation_subject(binding.id, fact.data["room_id"])
+
+    media =
+      Enum.map(fact.data["media"], fn item ->
+        assert {:ok, value} = Chat.resolve_resource(binding, item["resource_ref"])
+        value
+      end)
+
+    {:ok, %{data: fact.data, media: media}}
+  end
+
+  defp normalized(payload, opts \\ []) do
+    binding = captured_binding(opts)
+    assert {:ok, %{signals: facts}} = Chat.normalize_event(binding, payload)
+    facts
+  end
+
   test "channel metadata" do
     caps = Adapter.capabilities()
 
@@ -235,14 +265,11 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
       author: %{id: 444, username: "user", global_name: "User"}
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(msg)
-    assert incoming.external_room_id == "222"
-    assert incoming.external_user_id == 444
-    assert incoming.text == "Hello"
-    assert incoming.chat_type == :guild
-    assert incoming.channel_meta.adapter_name == :discord
-    assert incoming.channel_meta.external_room_id == "222"
-    assert incoming.channel_meta.is_dm == false
+    assert {:ok, incoming} = native_message(msg)
+    assert incoming.data["room_id"] == "222"
+    assert incoming.data["sender"]["id"] == "444"
+    assert incoming.data["text"] == "Hello"
+    assert incoming.data["conversation_kind"] == "channel"
   end
 
   test "transform_incoming/1 with string map" do
@@ -255,14 +282,11 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
       "author" => %{"id" => 444, "username" => "user", "global_name" => nil}
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(msg)
-    assert incoming.external_room_id == "222"
-    assert incoming.external_user_id == 444
-    assert incoming.display_name == "user"
-    assert incoming.chat_type == :dm
-    assert incoming.channel_meta.adapter_name == :discord
-    assert incoming.channel_meta.external_room_id == "222"
-    assert incoming.channel_meta.is_dm == true
+    assert {:ok, incoming} = native_message(msg)
+    assert incoming.data["room_id"] == "222"
+    assert incoming.data["sender"]["id"] == "444"
+    assert incoming.data["sender"]["display_name"] == "user"
+    assert incoming.data["conversation_kind"] == "direct"
   end
 
   test "transform_incoming/1 extracts attachments" do
@@ -310,7 +334,7 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
       ]
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(msg)
+    assert {:ok, incoming} = native_message(msg)
 
     assert [media, fallback, unknown, signed_url, misleading] = incoming.media
     assert media.kind == :image
@@ -386,14 +410,16 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   end
 
   test "transform_incoming/1 unsupported input" do
-    assert {:error, :unsupported_message_type} = Adapter.transform_incoming("invalid")
+    [failure] = normalized("invalid")
+    assert failure.type == "jido.chat.normalization.failed"
+    assert failure.data["code"] == "invalid_item"
   end
 
   test "send_message/3 delegates to transport" do
     assert {:ok, result} = Adapter.send_message("123", "hi", transport: MockTransport)
     assert_received {:send_message, "123", "hi", []}
-    assert result.external_message_id == 42
-    assert result.message_id == "42"
+    assert result.message_id == 42
+    assert result.message_id == 42
   end
 
   test "send_message/3 maps generic reply_to_id to discord message_reference" do
@@ -536,194 +562,151 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   end
 
   test "handle_webhook/3 normalizes and routes through Jido.Chat.process_message/5" do
-    chat =
-      Chat.new(user_name: "jido", adapters: %{discord: Jido.Chat.Discord.Adapter})
-      |> Chat.on_new_mention(fn _thread, _incoming -> send(self(), :mention) end)
-
     payload = %{
       "id" => "111",
       "channel_id" => "222",
       "content" => "@jido ping",
-      "timestamp" => ~U[2024-01-31 12:00:00.000000Z],
-      "guild_id" => nil,
-      "author" => %{"id" => "444", "username" => "user", "global_name" => nil}
+      "author" => %{"id" => "444"},
+      "mentions" => [%{"id" => "bot"}]
     }
 
-    assert {:ok, _updated_chat, %Jido.Chat.Incoming{} = incoming} =
-             Adapter.handle_webhook(chat, payload, [])
+    {binding, request} = signed_request(payload)
+    {:ok, unit} = Chat.normalize_event(binding, request)
+    {:ok, handlers} = Jido.Chat.Handlers.new()
 
-    assert incoming.external_room_id == "222"
-    assert incoming.external_message_id == "111"
-    assert_received :mention
+    {:ok, handlers} =
+      Jido.Chat.Handlers.on(handlers, Jido.Chat.Signal.MessageReceived, fn fact -> send(self(), {:mention, fact}) end,
+        mode: :mention
+      )
+
+    assert {:ok, _, _} = Jido.Chat.Handlers.accept(handlers, binding, unit)
+    assert_receive {:mention, fact}
+    assert fact.data["room_id"] == "222"
+    assert fact.data["message_id"] == "111"
+    assert fact.data["text"] == "@jido ping"
   end
 
   test "interaction webhook routes slash/action/modal events" do
-    chat =
-      Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
-      |> Chat.on_slash_command(fn _event -> send(self(), :slash_hit) end)
-      |> Chat.on_action(fn _event -> send(self(), :action_hit) end)
-      |> Chat.on_modal_submit(fn _event -> send(self(), :modal_hit) end)
+    binding = captured_binding()
 
-    slash_payload = %{
-      "id" => "900",
-      "type" => 2,
-      "channel_id" => "222",
-      "data" => %{"name" => "help", "options" => [%{"value" => "topic"}]},
-      "member" => %{"user" => %{"id" => "444", "username" => "user"}}
-    }
-
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, slash_payload, [])
-    assert_received :slash_hit
-
-    action_payload = %{
-      "id" => "901",
-      "type" => 3,
-      "channel_id" => "222",
-      "data" => %{"custom_id" => "approve", "values" => ["yes"]},
-      "member" => %{"user" => %{"id" => "444", "username" => "user"}}
-    }
-
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, action_payload, [])
-    assert_received :action_hit
-
-    modal_payload = %{
-      "id" => "902",
-      "type" => 5,
-      "channel_id" => "222",
-      "data" => %{
-        "custom_id" => "feedback",
-        "components" => [%{"components" => [%{"custom_id" => "notes", "value" => "great"}]}]
+    payloads = [
+      %{
+        "id" => "900",
+        "type" => 2,
+        "channel_id" => "222",
+        "data" => %{"name" => "help", "options" => [%{"value" => "topic"}]},
+        "member" => %{"user" => %{"id" => "444"}}
       },
-      "member" => %{"user" => %{"id" => "444", "username" => "user"}}
-    }
+      %{
+        "id" => "901",
+        "type" => 3,
+        "channel_id" => "222",
+        "data" => %{"custom_id" => "approve", "values" => ["yes"]},
+        "member" => %{"user" => %{"id" => "444"}}
+      },
+      %{
+        "id" => "902",
+        "type" => 5,
+        "channel_id" => "222",
+        "data" => %{
+          "custom_id" => "feedback",
+          "components" => [%{"components" => [%{"custom_id" => "notes", "value" => "great"}]}]
+        },
+        "member" => %{"user" => %{"id" => "444"}}
+      }
+    ]
 
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, modal_payload, [])
-    assert_received :modal_hit
+    assert {:ok, %{signals: [slash, action, modal]}} = Chat.normalize_event(binding, payloads)
+    assert slash.type == "jido.chat.slash_command.received" and slash.data["text"] == "topic"
+    assert action.type == "jido.chat.action.received" and action.data["values"] == %{"approve" => ["yes"]}
+    assert modal.type == "jido.chat.modal.submitted" and modal.data["values"] == %{"notes" => "great"}
+    {:ok, handlers} = Jido.Chat.Handlers.new()
+
+    handlers =
+      Enum.reduce(
+        [Jido.Chat.Signal.SlashCommandReceived, Jido.Chat.Signal.ActionReceived, Jido.Chat.Signal.ModalSubmitted],
+        handlers,
+        fn definition, acc ->
+          {:ok, acc} = Jido.Chat.Handlers.on(acc, definition, fn fact -> send(self(), {:handled, fact.type}) end)
+          acc
+        end
+      )
+
+    {:ok, unit} = Chat.normalize_event(binding, payloads)
+    assert {:ok, _, _} = Jido.Chat.Handlers.accept(handlers, binding, unit)
+    assert_receive {:handled, "jido.chat.slash_command.received"}
+    assert_receive {:handled, "jido.chat.action.received"}
+    assert_receive {:handled, "jido.chat.modal.submitted"}
   end
 
   test "handle_webhook/3 fails closed when signature verification fails" do
-    chat = Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
+    binding = captured_binding(public_key: String.duplicate("A1", 32))
+    payload = %{"id" => "900", "type" => 2, "channel_id" => "222", "data" => %{"name" => "help"}}
 
-    payload = %{
-      "id" => "900",
-      "type" => 2,
-      "channel_id" => "222",
-      "data" => %{"name" => "help"},
-      "member" => %{"user" => %{"id" => "444", "username" => "user"}}
-    }
+    request =
+      Jido.Chat.WebhookRequest.new(%{
+        payload: payload,
+        raw: Jason.encode!(payload),
+        headers: %{"x-signature-ed25519" => String.duplicate("00", 64), "x-signature-timestamp" => "1706745600"}
+      })
 
-    assert {:error, :invalid_signature} =
-             Adapter.handle_webhook(chat, payload,
-               public_key: String.duplicate("A1", 32),
-               headers: %{
-                 "x-signature-ed25519" => String.duplicate("00", 64),
-                 "x-signature-timestamp" => "1706745600"
-               },
-               raw_body: Jason.encode!(payload)
-             )
+    assert {:error, :invalid_signature} = Adapter.verify_webhook(request, binding.options)
+    assert {:error, %Jido.Chat.Errors.Contract{code: :invalid_delivery}} = Chat.normalize_event(binding, request)
   end
 
   test "gateway helper routes reactions and modal_close events" do
-    chat =
-      Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
-      |> Chat.on_reaction(fn _event -> send(self(), :reaction_hit) end)
-      |> Chat.on_modal_close(fn _event -> send(self(), :modal_close_hit) end)
+    [reaction] =
+      normalized(%{
+        event: "MESSAGE_REACTION_ADD",
+        payload: %{channel_id: "222", message_id: "111", user_id: "444", emoji: %{name: "👍"}}
+      })
 
-    reaction_event = %{
-      event: "MESSAGE_REACTION_ADD",
-      payload: %{
-        channel_id: "222",
-        message_id: "111",
-        user_id: "444",
-        emoji: %{name: "👍"}
-      }
-    }
-
-    assert {:ok, _chat, _event} = Adapter.handle_gateway_event(chat, reaction_event, [])
-    assert_received :reaction_hit
-
-    modal_close_event = %{event: "MODAL_CLOSE", payload: %{id: "abc", custom_id: "feedback"}}
-    assert {:ok, _chat, _event} = Adapter.handle_gateway_event(chat, modal_close_event, [])
-    assert_received :modal_close_hit
+    assert reaction.type == "jido.chat.reaction.added"
+    assert reaction.data["reaction"] == "👍"
+    [unsupported] = normalized(%{event: "MODAL_CLOSE", payload: %{id: "abc", custom_id: "feedback"}})
+    assert unsupported.type == "jido.chat.normalization.failed"
+    assert unsupported.data["code"] == "unsupported_item"
   end
 
   test "gateway helper routes message lifecycle events without changing message create" do
-    chat =
-      Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
-      |> Chat.on_message_updated(fn event -> send(self(), {:message_updated, event}) end)
-      |> Chat.on_message_deleted(fn event -> send(self(), {:message_deleted, event}) end)
+    [updated] =
+      normalized(%{
+        "t" => "MESSAGE_UPDATE",
+        "d" => %{"id" => "111", "channel_id" => "222", "edited_timestamp" => "2026-08-20T12:00:00Z", "flags" => 4}
+      })
 
-    update_payload = %{
-      "id" => "111",
-      "channel_id" => "222",
-      "edited_timestamp" => "2026-08-20T12:00:00Z",
-      "flags" => 4
-    }
+    assert updated.type == "jido.chat.message.updated"
+    assert updated.data["message_id"] == "111" and updated.data["text"] == nil
+    assert updated.data["timestamp"] == "2026-08-20T12:00:00Z"
+    [deleted] = normalized({:MESSAGE_DELETE, %{"id" => "111", "channel_id" => "222", "guild_id" => "guild-1"}})
+    assert deleted.type == "jido.chat.message.deleted" and deleted.data["message_id"] == "111"
 
-    assert {:ok, chat, %Jido.Chat.EventEnvelope{} = update_envelope} =
-             Adapter.handle_gateway_event(chat, %{"t" => "MESSAGE_UPDATE", "d" => update_payload}, [])
+    [created] =
+      normalized(
+        {:MESSAGE_CREATE,
+         %{"id" => "112", "channel_id" => "222", "content" => "new message", "author" => %{"id" => "444"}}}
+      )
 
-    assert update_envelope.event_type == :message_updated
-    assert update_envelope.raw == update_payload
-    assert update_envelope.payload.message == nil
-    assert update_envelope.payload.raw == update_payload
-    assert_received {:message_updated, %Jido.Chat.MessageUpdatedEvent{} = updated}
-    assert updated.message_id == "111"
-    assert updated.message == nil
+    assert created.type == "jido.chat.message.received" and created.data["text"] == "new message"
 
-    delete_payload = %{"id" => "111", "channel_id" => "222", "guild_id" => "guild-1"}
-
-    assert {:ok, chat, %Jido.Chat.EventEnvelope{} = delete_envelope} =
-             Adapter.handle_gateway_event(chat, {:MESSAGE_DELETE, delete_payload}, [])
-
-    assert delete_envelope.event_type == :message_deleted
-    assert delete_envelope.raw == delete_payload
-    assert delete_envelope.payload.author == nil
-    assert delete_envelope.payload.message == nil
-    assert_received {:message_deleted, %Jido.Chat.MessageDeletedEvent{} = deleted}
-    assert deleted.message_id == "111"
-
-    create_payload = %{
-      "id" => "112",
-      "channel_id" => "222",
-      "content" => "new message",
-      "author" => %{"id" => "444", "username" => "user"}
-    }
-
-    assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
-             Adapter.handle_gateway_event(chat, {:MESSAGE_CREATE, create_payload}, [])
-
-    assert incoming.text == "new message"
-    assert incoming.external_message_id == "112"
-
-    assert {:error, {:invalid_message_lifecycle_payload, [:channel_id]}} =
-             Adapter.handle_gateway_event(chat, {:MESSAGE_UPDATE, %{"id" => "111"}}, [])
-
-    assert {:error, {:invalid_message_lifecycle_payload, [:message_id]}} =
-             Adapter.handle_gateway_event(chat, {:MESSAGE_DELETE, %{"channel_id" => "222"}}, [])
+    for payload <- [{:MESSAGE_UPDATE, %{"id" => "111"}}, {:MESSAGE_DELETE, %{"channel_id" => "222"}}] do
+      [failure] = normalized(payload)
+      assert failure.type == "jido.chat.normalization.failed" and failure.data["code"] == "invalid_item"
+    end
   end
 
   test "gateway helper rejects invalid lifecycle payloads and still routes the next event" do
-    chat = Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
+    payloads = [
+      %{"t" => "MESSAGE_UPDATE", "d" => "not-a-map"},
+      %{"t" => "MESSAGE_UPDATE", "d" => %{"id" => %{}, "channel_id" => %{}}},
+      {:MESSAGE_CREATE,
+       %{"id" => "112", "channel_id" => "222", "content" => "still routed", "author" => %{"id" => "444"}}}
+    ]
 
-    assert {:error, {:invalid_message_lifecycle_payload, [:payload]}} =
-             Adapter.handle_gateway_event(chat, %{"t" => "MESSAGE_UPDATE", "d" => "not-a-map"}, [])
-
-    assert {:error, {:invalid_message_lifecycle_payload, [:channel_id, :message_id]}} =
-             Adapter.handle_gateway_event(
-               chat,
-               %{"t" => "MESSAGE_UPDATE", "d" => %{"id" => %{}, "channel_id" => %{}}},
-               []
-             )
-
-    assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
-             Adapter.handle_gateway_event(
-               chat,
-               {:MESSAGE_CREATE, %{"id" => "112", "channel_id" => "222", "content" => "still routed"}},
-               []
-             )
-
-    assert incoming.text == "still routed"
+    assert [first, second, created] = normalized(payloads)
+    assert first.type == "jido.chat.normalization.failed"
+    assert second.type == "jido.chat.normalization.failed"
+    assert created.data["text"] == "still routed"
   end
 
   test "post_ephemeral supports native interaction response path" do
@@ -762,38 +745,41 @@ defmodule Jido.Chat.Discord.AdapterSurfaceTest do
   end
 
   test "interaction ping parse and format path returns noop and pong body" do
-    request =
-      Jido.Chat.WebhookRequest.new(%{
-        adapter_name: :discord,
-        payload: %{"type" => 1}
-      })
-
-    assert {:ok, :noop} = Jido.Chat.Discord.Adapter.parse_event(request, [])
-
-    response =
-      Jido.Chat.Discord.Adapter.format_webhook_response(
-        {:ok, Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter}), :noop},
-        request: request
-      )
-
+    {binding, request} = signed_request(%{"type" => 1})
+    assert {:ok, %{signals: []} = unit} = Chat.normalize_event(binding, request)
+    response = Adapter.format_webhook_response({:ok, unit}, request: request)
     assert response.body == %{type: 1}
   end
 
   test "component action payload falls back to payload.message.id for message_id" do
-    chat =
-      Chat.new(adapters: %{discord: Jido.Chat.Discord.Adapter})
-      |> Chat.on_action(fn event -> send(self(), {:action_message_id, event.message_id}) end)
+    [action] =
+      normalized(%{
+        "id" => "901",
+        "type" => 3,
+        "channel_id" => "222",
+        "message" => %{"id" => "msg-from-payload"},
+        "data" => %{"custom_id" => "approve", "values" => ["yes"]},
+        "member" => %{"user" => %{"id" => "444"}}
+      })
 
-    action_payload = %{
-      "id" => "901",
-      "type" => 3,
-      "channel_id" => "222",
-      "message" => %{"id" => "msg-from-payload"},
-      "data" => %{"custom_id" => "approve", "values" => ["yes"]},
-      "member" => %{"user" => %{"id" => "444", "username" => "user"}}
-    }
+    assert action.type == "jido.chat.action.received"
+    assert action.data["message_id"] == "msg-from-payload"
+  end
 
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, action_payload, [])
-    assert_received {:action_message_id, "msg-from-payload"}
+  defp signed_request(payload) do
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    raw = Jason.encode!(payload)
+    timestamp = "1706745600"
+    signature = :crypto.sign(:eddsa, :none, timestamp <> raw, [private, :ed25519]) |> Base.encode16(case: :lower)
+    binding = captured_binding(public_key: Base.encode16(public, case: :lower))
+
+    request =
+      Jido.Chat.WebhookRequest.new(%{
+        payload: payload,
+        raw: raw,
+        headers: %{"x-signature-ed25519" => signature, "x-signature-timestamp" => timestamp}
+      })
+
+    {binding, request}
   end
 end

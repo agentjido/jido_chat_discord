@@ -1,12 +1,10 @@
 defmodule Jido.Chat.Discord.GatewayWorkerTest do
   use ExUnit.Case, async: false
-
-  alias Jido.Chat.{EventEnvelope, MessageDeletedEvent, MessageUpdatedEvent}
   alias Jido.Chat.Discord.{Adapter, GatewayWorker}
 
   defmodule Sink do
-    def emit(test_pid, payload, opts) do
-      send(test_pid, {:sink_emit, payload, opts})
+    def emit(pid, delivery, opts) do
+      send(pid, {:sink_emit, delivery, opts})
       {:ok, :accepted}
     end
   end
@@ -14,249 +12,275 @@ defmodule Jido.Chat.Discord.GatewayWorkerTest do
   defmodule Source do
     def pop(agent) do
       Agent.get_and_update(agent, fn
-        [next | rest] -> {next, rest}
-        [] -> {[], []}
+        [next | rest] -> {{:ok, next}, rest}
+        [] -> {{:ok, []}, []}
       end)
     end
   end
 
-  test "adapter listener_child_specs/2 returns expected webhook/gateway specs" do
-    assert {:ok, []} = Adapter.listener_child_specs("bridge_discord", ingress: %{mode: "webhook"})
+  defmodule RejectingSink do
+    def emit(pid, mode, delivery, _opts) do
+      send(pid, {:rejected_unit, delivery})
 
-    assert {:error, :invalid_sink_mfa} =
-             Adapter.listener_child_specs("bridge_discord", ingress: %{mode: "gateway"})
+      case mode do
+        :error -> {:error, :rejected}
+        :raise -> raise "sink failed"
+        :throw -> throw(:failed)
+        :exit -> exit(:failed)
+        :invalid -> :invalid
+      end
+    end
+  end
+
+  defp captured_binding do
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "bridge_discord")
+    binding
+  end
+
+  defp worker(extra \\ []) do
+    start_supervised!(
+      {GatewayWorker,
+       [
+         bridge_id: "bridge_discord",
+         binding: captured_binding(),
+         sink_mfa: {Sink, :emit, [self()]},
+         poll_interval_ms: 60_000
+       ] ++ extra}
+    )
+  end
+
+  defp message do
+    %{"id" => "msg-1", "channel_id" => "channel-1", "content" => "hello", "author" => %{"id" => "user-1"}}
+  end
+
+  test "adapter listener_child_specs/2 returns expected webhook/gateway specs" do
+    binding = captured_binding()
+    assert {:ok, []} = Adapter.listener_child_specs(binding.id, ingress: %{mode: "webhook"})
+    assert {:error, :invalid_sink_mfa} = Adapter.listener_child_specs(binding.id, ingress: %{mode: "gateway"})
 
     assert {:ok, specs} =
-             Adapter.listener_child_specs("bridge_discord",
+             Adapter.listener_child_specs(binding.id,
+               binding: binding,
                ingress: %{mode: "gateway"},
                sink_mfa: {Sink, :emit, [self()]}
              )
 
     assert Enum.map(specs, & &1.id) == [
-             {:discord_gateway_buffer, "bridge_discord"},
-             {:discord_gateway_listener, "bridge_discord"},
-             {:discord_gateway_worker, "bridge_discord"}
+             {:discord_gateway_buffer, binding.id},
+             {:discord_gateway_listener, binding.id},
+             {:discord_gateway_worker, binding.id}
            ]
 
     assert {:ok, [spec]} =
-             Adapter.listener_child_specs("bridge_discord",
-               ingress: %{
-                 mode: "gateway",
-                 source: "mfa",
-                 event_source_mfa: {Source, :pop, [self()]}
-               },
+             Adapter.listener_child_specs(binding.id,
+               binding: binding,
+               ingress: %{mode: "gateway", source: "mfa", event_source_mfa: {Source, :pop, [self()]}},
                sink_mfa: {Sink, :emit, [self()]}
              )
 
-    assert spec.id == {:discord_gateway_worker, "bridge_discord"}
-
-    assert {:error, :invalid_event_source_mfa} =
-             Adapter.listener_child_specs("bridge_discord",
-               ingress: %{mode: "gateway", source: "mfa"},
-               sink_mfa: {Sink, :emit, [self()]}
-             )
+    assert spec.id == {:discord_gateway_worker, binding.id}
   end
 
   test "gateway worker emits message create payload through sink" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
-
-    event = %{
-      event: "MESSAGE_CREATE",
-      payload: %{
-        "id" => "msg-1",
-        "channel_id" => "channel-1",
-        "content" => "hello",
-        "author" => %{"id" => "user-1"}
-      }
-    }
-
-    :ok = GatewayWorker.emit(pid, event)
-
-    assert_receive {:sink_emit, %{"id" => "msg-1", "channel_id" => "channel-1"}, opts}, 200
-    assert opts[:mode] == :payload
+    pid = worker()
+    GatewayWorker.emit(pid, %{event: "MESSAGE_CREATE", payload: message()})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.message.received"
+    assert fact.data["message_id"] == "msg-1"
+    assert fact.data["room_id"] == "channel-1"
+    assert fact.data["text"] == "hello"
   end
 
   test "gateway worker normalizes reaction dispatch payload into EventEnvelope" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+    pid = worker()
 
-    :ok =
-      GatewayWorker.emit(pid, %{
-        "t" => "MESSAGE_REACTION_ADD",
-        "d" => %{
-          "channel_id" => "channel-1",
-          "message_id" => "msg-1",
-          "user_id" => "user-1",
-          "emoji" => %{"name" => "👍"}
-        }
-      })
+    GatewayWorker.emit(pid, %{
+      "t" => "MESSAGE_REACTION_ADD",
+      "d" => %{
+        "channel_id" => "channel-1",
+        "message_id" => "msg-1",
+        "user_id" => "user-1",
+        "emoji" => %{"name" => "👍"}
+      }
+    })
 
-    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
-    assert envelope.event_type == :reaction
-    assert envelope.channel_id == "channel-1"
-    assert opts[:mode] == :payload
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.reaction.added"
+    assert fact.data["reaction"] == "👍"
+    assert fact.data["room_id"] == "channel-1"
   end
 
   test "gateway worker preserves a partial message update as a typed lifecycle event" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+    pid = worker()
 
-    payload = %{
-      "id" => "msg-1",
-      "channel_id" => "channel-1",
-      "edited_timestamp" => "2026-08-20T12:00:00Z",
-      "flags" => 4
-    }
+    GatewayWorker.emit(pid, %{
+      "t" => "MESSAGE_UPDATE",
+      "d" => %{
+        "id" => "msg-1",
+        "channel_id" => "channel-1",
+        "edited_timestamp" => "2026-08-20T12:00:00Z",
+        "flags" => 4
+      }
+    })
 
-    :ok = GatewayWorker.emit(pid, %{"t" => "MESSAGE_UPDATE", "d" => payload})
-
-    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
-    assert envelope.event_type == :message_updated
-    assert envelope.thread_id == "discord:channel-1"
-    assert envelope.channel_id == "channel-1"
-    assert envelope.message_id == "msg-1"
-    assert envelope.raw == payload
-    assert %MessageUpdatedEvent{} = envelope.payload
-    assert envelope.payload.message == nil
-    assert envelope.payload.raw == payload
-    assert opts[:path] == "/gateway/message_update"
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.message.updated"
+    assert fact.data["message_id"] == "msg-1"
+    assert fact.data["text"] == nil
+    assert fact.data["timestamp"] == "2026-08-20T12:00:00Z"
+    refute Map.has_key?(fact.data, "raw")
   end
 
   test "gateway worker treats null content as absent and preserves empty content" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+    pid = worker()
 
-    null_payload = %{"id" => "msg-null", "channel_id" => "channel-1", "content" => nil}
-    empty_payload = %{"id" => "msg-empty", "channel_id" => "channel-1", "content" => ""}
+    GatewayWorker.emit(
+      pid,
+      {:MESSAGE_UPDATE,
+       %{
+         "id" => "msg-null",
+         "channel_id" => "channel-1",
+         "content" => nil
+       }}
+    )
 
-    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, null_payload})
-    assert_receive {:sink_emit, %EventEnvelope{payload: null_update}, _opts}, 200
-    assert null_update.message == nil
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [null]}, []}
+    assert null.data["text"] == nil
 
-    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, empty_payload})
-    assert_receive {:sink_emit, %EventEnvelope{payload: empty_update}, _opts}, 200
-    assert empty_update.message.text == ""
+    GatewayWorker.emit(
+      pid,
+      {:MESSAGE_UPDATE,
+       %{
+         "id" => "msg-empty",
+         "channel_id" => "channel-1",
+         "content" => ""
+       }}
+    )
+
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [empty]}, []}
+    assert empty.data["text"] == ""
   end
 
   test "gateway worker stays available after an invalid lifecycle payload" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
-
-    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, %{"id" => "msg-1"}})
-    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
-
-    :ok =
-      GatewayWorker.emit(pid, {
-        :MESSAGE_CREATE,
-        %{"id" => "msg-2", "channel_id" => "channel-1", "content" => "hello"}
-      })
-
-    assert_receive {:sink_emit, %{"id" => "msg-2"}, _opts}, 200
+    pid = worker()
+    GatewayWorker.emit(pid, {:MESSAGE_UPDATE, %{"id" => "msg-1"}})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [failure]}, []}
+    assert failure.type == "jido.chat.normalization.failed"
+    GatewayWorker.emit(pid, {:MESSAGE_CREATE, message()})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.message.received"
+    assert :sys.get_state(pid).last_result == :ok
   end
 
   test "gateway worker stays available after scalar payloads and object-valued lifecycle IDs" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+    pid = worker()
 
-    :ok = GatewayWorker.emit(pid, %{"t" => "MESSAGE_UPDATE", "d" => "not-a-map"})
-    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
+    for payload <- ["scalar", %{"id" => %{}, "channel_id" => %{}}] do
+      GatewayWorker.emit(pid, {:MESSAGE_UPDATE, payload})
+      assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [failure]}, []}
+      assert failure.type == "jido.chat.normalization.failed"
+    end
 
-    :ok =
-      GatewayWorker.emit(pid, %{
-        "t" => "MESSAGE_UPDATE",
-        "d" => %{"id" => %{}, "channel_id" => %{}}
-      })
-
-    assert %{bridge_id: "bridge_discord"} = :sys.get_state(pid)
-
-    :ok =
-      GatewayWorker.emit(pid, {
-        :MESSAGE_CREATE,
-        %{"id" => "msg-2", "channel_id" => "channel-1", "content" => "still routed"}
-      })
-
-    assert_receive {:sink_emit, %{"id" => "msg-2"}, _opts}, 200
+    GatewayWorker.emit(pid, {:MESSAGE_CREATE, message()})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.message.received"
   end
 
   test "gateway worker preserves populated message update details" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
+    pid = worker()
 
-    payload = %{
-      "id" => 42,
-      "channel_id" => 7,
-      "content" => "edited text",
-      "edited_timestamp" => "2026-08-20T12:00:00Z",
-      "author" => %{"id" => 9, "username" => "Ada", "global_name" => "Ada Lovelace"}
-    }
+    payload =
+      Map.merge(message(), %{
+        "content" => "changed",
+        "edited_timestamp" => "2026-08-20T12:00:00Z",
+        "attachments" => [
+          %{
+            "id" => "file-1",
+            "filename" => "photo.png",
+            "url" => "https://fixture.test/private",
+            "content_type" => "image/png"
+          }
+        ]
+      })
 
-    :ok = GatewayWorker.emit(pid, {:MESSAGE_UPDATE, payload})
-
-    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
-    assert envelope.event_type == :message_updated
-    assert envelope.thread_id == "discord:7"
-    assert envelope.channel_id == "7"
-    assert envelope.message_id == "42"
-    assert envelope.raw == payload
-    assert envelope.metadata == %{source: :gateway, gateway_event: "MESSAGE_UPDATE"}
-    assert %MessageUpdatedEvent{} = updated = envelope.payload
-    assert updated.author.user_id == "9"
-    assert updated.timestamp == "2026-08-20T12:00:00Z"
-    assert updated.message.id == "42"
-    assert updated.message.external_message_id == "42"
-    assert updated.message.thread_id == "discord:7"
-    assert updated.message.channel_id == "7"
-    assert updated.message.text == "edited text"
-    assert updated.message.author.user_name == "Ada"
-    assert updated.message.updated_at == "2026-08-20T12:00:00Z"
-    assert opts[:path] == "/gateway/message_update"
+    GatewayWorker.emit(pid, {:MESSAGE_UPDATE, payload})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.data["text"] == "changed"
+    assert fact.data["sender"]["id"] == "user-1"
+    assert fact.data["timestamp"] == "2026-08-20T12:00:00Z"
+    assert [%{"kind" => "image", "resource_ref" => _}] = fact.data["media"]
+    refute Jason.encode!(Jido.Signal.to_map(fact)) =~ "https://fixture.test/private"
   end
 
   test "gateway worker preserves a message delete as a typed lifecycle event" do
-    {:ok, pid} =
-      start_supervised({GatewayWorker, bridge_id: "bridge_discord", sink_mfa: {Sink, :emit, [self()]}, sink_opts: []})
-
-    payload = %{"id" => "msg-1", "channel_id" => "channel-1", "guild_id" => "guild-1"}
-
-    :ok = GatewayWorker.emit(pid, {:MESSAGE_DELETE, payload})
-
-    assert_receive {:sink_emit, %EventEnvelope{} = envelope, opts}, 200
-    assert envelope.event_type == :message_deleted
-    assert envelope.channel_id == "channel-1"
-    assert envelope.message_id == "msg-1"
-    assert envelope.raw == payload
-    assert %MessageDeletedEvent{} = envelope.payload
-    assert envelope.payload.author == nil
-    assert envelope.payload.message == nil
-    assert envelope.payload.raw == payload
-    assert opts[:path] == "/gateway/message_delete"
+    pid = worker()
+    GatewayWorker.emit(pid, {:MESSAGE_DELETE, %{"id" => "msg-1", "channel_id" => "channel-1"}})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [fact]}, []}
+    assert fact.type == "jido.chat.message.deleted"
+    assert fact.data["message_id"] == "msg-1"
+    assert fact.data["room_id"] == "channel-1"
   end
 
   test "gateway worker polls event source and emits events through sink" do
-    {:ok, agent} =
-      Agent.start_link(fn ->
-        [
-          [
-            %{
-              "t" => "MESSAGE_CREATE",
-              "d" => %{"id" => "m1", "channel_id" => "c1", "content" => "from-source"}
-            }
-          ],
-          []
-        ]
-      end)
-
-    {:ok, _pid} =
-      start_supervised(
-        {GatewayWorker,
-         bridge_id: "bridge_discord",
-         sink_mfa: {Sink, :emit, [self()]},
-         event_source_mfa: {Source, :pop, [agent]},
-         poll_interval_ms: 10}
+    source =
+      start_supervised!(
+        {Agent,
+         fn ->
+           [
+             [
+               {:MESSAGE_CREATE, message()},
+               {:MESSAGE_DELETE, %{"id" => "msg-2", "channel_id" => "channel-1"}}
+             ]
+           ]
+         end}
       )
 
-    assert_receive {:sink_emit, %{"id" => "m1", "channel_id" => "c1"}, opts}, 300
-    assert opts[:mode] == :payload
+    pid = worker(event_source_mfa: {Source, :pop, [source]})
+    assert_receive {:sink_emit, %Jido.Chat.Delivery{signals: [first, second]}, []}
+    assert first.type == "jido.chat.message.received"
+    assert second.type == "jido.chat.message.deleted"
+    assert :sys.get_state(pid).last_result == :ok
+    refute_received {:sink_emit, _, _}
+  end
+
+  for mode <- [:error, :raise, :throw, :exit, :invalid] do
+    test "sink #{mode} is reported without stopping the gateway worker" do
+      pid =
+        start_supervised!(
+          {GatewayWorker,
+           bridge_id: "reject",
+           binding: captured_binding(),
+           sink_mfa: {RejectingSink, :emit, [self(), unquote(mode)]},
+           poll_interval_ms: 60_000}
+        )
+
+      GatewayWorker.emit(pid, {:MESSAGE_CREATE, message()})
+      assert_receive {:rejected_unit, %Jido.Chat.Delivery{signals: [_]}}
+      assert {:error, _} = :sys.get_state(pid).last_result
+
+      GatewayWorker.emit(pid, [
+        {:MESSAGE_CREATE, Map.put(message(), "id", "next")},
+        {:MESSAGE_DELETE, %{"id" => "msg-1", "channel_id" => "channel-1"}}
+      ])
+
+      assert_receive {:rejected_unit, %Jido.Chat.Delivery{signals: [_, _]}}
+      assert {:error, _} = :sys.get_state(pid).last_result
+      refute_received {:rejected_unit, _}
+    end
+  end
+
+  test "every complete acquisition limit rejects before all sink calls" do
+    pid = worker()
+
+    for batch <- [
+          [{:MESSAGE_CREATE, Map.put(message(), "content", String.duplicate("x", 262_144))}],
+          List.duplicate({:MESSAGE_CREATE, message()}, 101),
+          List.duplicate({:MESSAGE_CREATE, %{}}, 21),
+          List.duplicate({:MESSAGE_CREATE, Map.put(message(), "content", String.duplicate("x", 200_000))}, 6)
+        ] do
+      GatewayWorker.emit(pid, batch)
+      assert {:error, %Jido.Chat.Errors.Contract{}} = :sys.get_state(pid).last_result
+      refute_received {:sink_emit, _, _}
+    end
   end
 end

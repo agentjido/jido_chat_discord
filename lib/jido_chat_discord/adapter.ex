@@ -1,21 +1,12 @@
 defmodule Jido.Chat.Discord.Adapter do
-  @moduledoc """
-  Discord `Jido.Chat.Adapter` implementation using Nostrum.
-  """
-
+  @moduledoc "Discord `Jido.Chat.Adapter` implementation using Nostrum.\n"
   use Jido.Chat.Adapter
 
   alias Jido.Chat.{
     ChannelInfo,
-    EphemeralMessage,
-    EventEnvelope,
     FileUpload,
-    Incoming,
     Media,
-    Message,
     MessagePage,
-    ModalResult,
-    Response,
     ThreadPage,
     WebhookRequest,
     WebhookResponse
@@ -26,7 +17,6 @@ defmodule Jido.Chat.Discord.Adapter do
     EditOptions,
     FetchOptions,
     GatewayWorker,
-    MessageLifecycle,
     NostrumGatewayBuffer,
     NostrumGatewayListener,
     MetadataOptions,
@@ -36,7 +26,6 @@ defmodule Jido.Chat.Discord.Adapter do
   }
 
   alias Jido.Chat.Discord.Transport.NostrumClient
-
   @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
   @media_kind_extensions %{
     ".aac" => :audio,
@@ -64,14 +53,367 @@ defmodule Jido.Chat.Discord.Adapter do
     ".webm" => :video,
     ".webp" => :image
   }
+  @impl true
+  def channel_type do
+    :discord
+  end
 
   @impl true
-  def channel_type, do: :discord
+  def signal_protocol, do: 1
+
+  @impl true
+  def configure_binding(opts) do
+    {:ok,
+     opts
+     |> Keyword.put_new(:transport, NostrumClient)
+     |> Keyword.put_new(:public_key, Application.get_env(:jido_chat_discord, :discord_public_key))}
+  end
+
+  @impl true
+  def normalize_event(binding, %WebhookRequest{} = request) do
+    with :ok <- verify_webhook(request, binding.options),
+         {:ok, payload} <- verified_payload(request, binding.options),
+         do: normalize_event(binding, payload)
+  end
+
+  def normalize_event(binding, input) do
+    tracker = {__MODULE__, make_ref()}
+    Process.put(tracker, [])
+
+    result =
+      try do
+        events = if is_list(input), do: input, else: [input]
+        items = Enum.map(events, &native_input/1)
+        delivery = "discord:" <> native_digest({binding.id, native_canonical(items)})
+        context = %{binding: binding, delivery: delivery, tracker: tracker}
+        with {:ok, facts} <- native_items(context, items), do: Jido.Chat.Delivery.new(binding, delivery, facts)
+      rescue
+        _ -> Jido.Chat.Signal.Policy.error(:invalid_delivery)
+      catch
+        _, _ -> Jido.Chat.Signal.Policy.error(:invalid_delivery)
+      end
+
+    if match?({:error, _}, result), do: Enum.each(Process.get(tracker, []), &Jido.Chat.cancel_resource(binding, &1))
+    Process.delete(tracker)
+    result
+  end
+
+  defp native_input({event, payload}), do: {event |> to_string() |> String.upcase(), payload, nil}
+
+  defp native_input(%{} = input) do
+    payload = native_get(input, "d") || native_get(input, "payload") || input
+    kind = native_get(input, "t") || native_get(input, "event")
+    kind = kind || if(native_get(payload, "type") in [1, 2, 3, 5], do: "INTERACTION_CREATE", else: "MESSAGE_CREATE")
+    {kind |> to_string() |> String.upcase(), payload, native_get(input, "s")}
+  end
+
+  defp native_input(_), do: {"invalid", nil, nil}
+
+  defp native_items(context, items) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {{kind, payload, sequence}, index}, {:ok, acc} ->
+      identity =
+        native_id(payload, "id") || native_id(payload, "message_id") || native_digest(native_canonical(payload))
+
+      context = Map.merge(context, %{item: "discord:#{kind}:#{sequence || identity}:0", index: index})
+      previous = Process.get(context.tracker)
+
+      result =
+        try do
+          native_map(context, kind, payload)
+        rescue
+          _ -> {:error, :invalid_item}
+        catch
+          _, _ -> {:error, :invalid_item}
+        end
+
+      case result do
+        {:ok, facts} ->
+          if Enum.all?(List.wrap(facts), &(&1.type == "jido.chat.normalization.failed")) do
+            Enum.each(Process.get(context.tracker) -- previous, &Jido.Chat.cancel_resource(context.binding, &1))
+          end
+
+          {:cont, {:ok, acc ++ List.wrap(facts)}}
+
+        {:error, %Jido.Chat.Errors.Contract{code: code}} = error
+        when code in [:signal_too_large, :delivery_too_large, :too_many_signals, :too_many_failures] ->
+          {:halt, error}
+
+        _ ->
+          Enum.each(Process.get(context.tracker) -- previous, &Jido.Chat.cancel_resource(context.binding, &1))
+
+          case native_failure(context, "invalid_item", kind, nil) do
+            {:ok, fact} -> {:cont, {:ok, acc ++ [fact]}}
+            error -> {:halt, error}
+          end
+      end
+    end)
+  end
+
+  defp native_map(context, kind, payload) when is_map(payload) do
+    room = native_id(payload, "channel_id")
+    id = native_id(payload, "id") || native_id(payload, "message_id")
+
+    case kind do
+      "MESSAGE_CREATE" ->
+        with {:ok, message} <- provider_message(payload), {:ok, media} <- native_media(context, message.media) do
+          native_fact(context, Jido.Chat.Signal.MessageReceived, %{
+            "room_id" => message.external_room_id,
+            "message_id" => id,
+            "sender" => native_actor(native_get(payload, "author") || %{}, context.binding),
+            "text" => message.text || "",
+            "thread_id" => message.external_thread_id,
+            "media" => media,
+            "timestamp" => native_time(native_get(payload, "timestamp")),
+            "conversation_kind" => if(message.chat_type == :dm, do: "direct", else: "channel"),
+            "mentions" => Enum.map(native_get(payload, "mentions") || [], &native_id(&1, "id")),
+            "mentioned" =>
+              Enum.any?(
+                native_get(payload, "mentions") || [],
+                &(native_id(&1, "id") == to_string(context.binding.options[:bot_id] || ""))
+              ),
+            "reply_to_id" => native_id(native_get(payload, "message_reference"), "message_id")
+          })
+        end
+
+      "MESSAGE_UPDATE" ->
+        with {:ok, media} <- native_media(context, extract_media(payload)) do
+          native_fact(context, Jido.Chat.Signal.MessageUpdated, %{
+            "room_id" => room,
+            "message_id" => id,
+            "text" => native_get(payload, "content"),
+            "media" => media,
+            "sender" =>
+              if(native_get(payload, "author"), do: native_actor(native_get(payload, "author"), context.binding)),
+            "timestamp" => native_time(native_get(payload, "edited_timestamp") || native_get(payload, "timestamp"))
+          })
+        end
+
+      "MESSAGE_DELETE" ->
+        native_fact(context, Jido.Chat.Signal.MessageDeleted, %{"room_id" => room, "message_id" => id})
+
+      "MESSAGE_REACTION_ADD" ->
+        native_reaction(context, payload, Jido.Chat.Signal.ReactionAdded)
+
+      "MESSAGE_REACTION_REMOVE" ->
+        native_reaction(context, payload, Jido.Chat.Signal.ReactionRemoved)
+
+      "THREAD_CREATE" ->
+        native_fact(context, Jido.Chat.Signal.ThreadStarted, %{
+          "room_id" => native_id(payload, "parent_id"),
+          "thread_id" => id,
+          "name" => native_get(payload, "name"),
+          "actor_id" => native_id(payload, "owner_id")
+        })
+
+      "INTERACTION_CREATE" ->
+        native_interaction(context, payload)
+
+      _ ->
+        native_failure(context, "unsupported_item", kind, room)
+    end
+  end
+
+  defp native_map(context, kind, _), do: native_failure(context, "invalid_item", kind, nil)
+
+  defp native_reaction(context, payload, definition) do
+    emoji = native_get(payload, "emoji") || %{}
+    reaction = native_get(emoji, "name") || native_id(emoji, "id")
+
+    native_fact(context, definition, %{
+      "room_id" => native_id(payload, "channel_id"),
+      "message_id" => native_id(payload, "message_id"),
+      "actor_id" => native_id(payload, "user_id"),
+      "reaction" => reaction
+    })
+  end
+
+  defp native_interaction(context, payload) do
+    type = native_get(payload, "type")
+
+    if type == 1 do
+      {:ok, []}
+    else
+      room = native_id(payload, "channel_id")
+      interaction = native_id(payload, "id")
+      data = native_get(payload, "data") || %{}
+      user = native_get(payload, "user") || native_get(native_get(payload, "member"), "user") || %{}
+      private = %{interaction_id: interaction, interaction_token: native_get(payload, "token"), room_id: room}
+
+      with {:ok, ref} <- Jido.Chat.put_resource(context.binding, "result", private) do
+        Process.put(context.tracker, [ref | Process.get(context.tracker)])
+        :ets.insert(context.binding.resources, {{:discord_interaction, interaction}, ref})
+        base = %{"room_id" => room, "interaction_id" => interaction, "actor_id" => native_id(user, "id")}
+
+        case type do
+          2 ->
+            native_fact(
+              context,
+              Jido.Chat.Signal.SlashCommandReceived,
+              Map.merge(base, %{
+                "command" => "/" <> to_string(native_get(data, "name")),
+                "text" => Enum.map_join(native_get(data, "options") || [], " ", &to_string(native_get(&1, "value")))
+              })
+            )
+
+          3 ->
+            values = native_get(data, "values") || []
+
+            native_fact(
+              context,
+              Jido.Chat.Signal.ActionReceived,
+              Map.merge(base, %{
+                "action_id" => native_get(data, "custom_id"),
+                "value" => List.first(values),
+                "values" => %{to_string(native_get(data, "custom_id")) => values},
+                "message_id" => native_id(native_get(payload, "message"), "id")
+              })
+            )
+
+          5 ->
+            values =
+              Enum.reduce(native_get(data, "components") || [], %{}, fn row, acc ->
+                Enum.reduce(native_get(row, "components") || [], acc, fn field, a ->
+                  Map.put(a, native_get(field, "custom_id"), native_get(field, "value"))
+                end)
+              end)
+
+            native_fact(
+              context,
+              Jido.Chat.Signal.ModalSubmitted,
+              Map.merge(base, %{
+                "view_id" => interaction,
+                "callback_id" => native_get(data, "custom_id"),
+                "values" => values
+              })
+            )
+
+          _ ->
+            native_failure(context, "unsupported_item", "interaction", room)
+        end
+      end
+    end
+  end
+
+  @doc false
+  def prepare_modal(%Jido.Chat.Binding{} = binding, interaction_id, modal) do
+    with [{_, ref}] <- :ets.lookup(binding.resources, {:discord_interaction, interaction_id}),
+         {:ok, controls} <- Jido.Chat.resolve_resource(binding, ref) do
+      modal = Jido.Chat.Modal.new(modal)
+      metadata = Map.merge(modal.metadata, controls)
+      Jido.Chat.put_resource(binding, "modal", %{modal | metadata: metadata})
+    else
+      {:error, _} = error -> error
+      _ -> Jido.Chat.Signal.Policy.error(:invalid_resource)
+    end
+  end
+
+  defp native_media(context, media) do
+    Enum.reduce_while(media, {:ok, []}, fn item, {:ok, acc} ->
+      with {:ok, ref} <- Jido.Chat.put_resource(context.binding, "media", item) do
+        Process.put(context.tracker, [ref | Process.get(context.tracker)])
+
+        value =
+          %{"kind" => to_string(item.kind), "resource_ref" => ref}
+          |> native_optional("name", item.metadata[:filename])
+          |> native_optional("media_type", item.media_type)
+
+        {:cont, {:ok, acc ++ [value]}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp native_fact(context, definition, data) do
+    room = data["room_id"]
+    data = Map.merge(data, %{"item_id" => context.item, "delivery_id" => context.delivery})
+    data = Map.reject(data, fn {key, value} -> is_nil(value) and key != "text" end)
+
+    subject =
+      if is_binary(room) and room != "", do: Jido.Chat.Signal.Identity.conversation_subject(context.binding.id, room)
+
+    definition.new(data, source: context.binding.source, subject: subject)
+  end
+
+  defp native_failure(context, code, kind, room),
+    do:
+      native_fact(context, Jido.Chat.Signal.NormalizationFailed, %{
+        "code" => code,
+        "provider_kind" => kind,
+        "item_index" => context.index,
+        "room_id" => room
+      })
+
+  defp native_actor(user, binding),
+    do:
+      %{
+        "id" => native_id(user, "id"),
+        "username" => native_get(user, "username"),
+        "display_name" => native_get(user, "global_name") || native_get(user, "username"),
+        "is_bot" => native_get(user, "bot") == true,
+        "is_self" => native_id(user, "id") == to_string(binding.options[:bot_id] || "")
+      }
+      |> Map.reject(fn {_, v} -> is_nil(v) end)
+
+  defp native_get(map, key) when is_map(map) do
+    atom =
+      try do
+        String.to_existing_atom(key)
+      rescue
+        ArgumentError -> nil
+      end
+
+    if Map.has_key?(map, key), do: Map.get(map, key), else: Map.get(map, atom)
+  end
+
+  defp native_get(_, _), do: nil
+
+  defp native_id(map, key) do
+    case native_get(map, key) do
+      v when is_binary(v) and v != "" -> v
+      v when is_integer(v) -> to_string(v)
+      _ -> nil
+    end
+  end
+
+  defp native_time(%DateTime{} = t), do: DateTime.to_iso8601(t)
+  defp native_time(t) when is_binary(t), do: t
+  defp native_time(_), do: nil
+  defp native_optional(map, _, nil), do: map
+  defp native_optional(map, k, v), do: Map.put(map, k, v)
+  defp native_canonical(%_{} = data), do: data |> Map.from_struct() |> native_canonical()
+
+  defp native_canonical(data) when is_map(data),
+    do: data |> Enum.map(fn {k, v} -> {to_string(k), native_canonical(v)} end) |> Enum.sort()
+
+  defp native_canonical(data) when is_list(data), do: Enum.map(data, &native_canonical/1)
+  defp native_canonical({kind, payload, sequence}), do: {kind, native_canonical(payload), sequence}
+  defp native_canonical(data), do: data
+  defp native_digest(data), do: :crypto.hash(:sha256, :erlang.term_to_binary(data)) |> Base.url_encode64(padding: false)
+
+  defp portable_message(incoming) do
+    %{
+      id: incoming.external_message_id,
+      room_id: incoming.external_room_id,
+      text: incoming.text || "",
+      thread_id: incoming.external_thread_id,
+      sender: %{
+        id: to_string(incoming.external_user_id),
+        username: incoming.username,
+        display_name: incoming.display_name
+      },
+      timestamp: incoming.timestamp,
+      attachments: incoming.media,
+      raw: incoming.raw
+    }
+  end
 
   @impl true
   @spec capabilities() :: map()
-  def capabilities,
-    do: %{
+  def capabilities do
+    %{
       initialize: :fallback,
       shutdown: :fallback,
       send_message: :native,
@@ -99,6 +441,7 @@ defmodule Jido.Chat.Discord.Adapter do
       parse_event: :native,
       format_webhook_response: :native
     }
+  end
 
   @impl true
   def listener_child_specs(bridge_id, opts \\ []) when is_binary(bridge_id) and is_list(opts) do
@@ -109,8 +452,12 @@ defmodule Jido.Chat.Discord.Adapter do
         {:ok, []}
 
       :gateway ->
-        with {:ok, sink_mfa} <- validate_sink_mfa(Keyword.get(opts, :sink_mfa)) do
-          gateway_listener_specs(bridge_id, ingress, sink_mfa)
+        with {:ok, sink_mfa} <- validate_sink_mfa(Keyword.get(opts, :sink_mfa)),
+             %Jido.Chat.Binding{} = binding <- Keyword.get(opts, :binding) do
+          gateway_listener_specs(bridge_id, binding, ingress, sink_mfa)
+        else
+          nil -> {:error, :invalid_binding}
+          {:error, _} = error -> error
         end
 
       :invalid ->
@@ -118,22 +465,23 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  @impl true
-  def transform_incoming(%Nostrum.Struct.Message{} = msg) do
+  defp provider_message(%Nostrum.Struct.Message{} = msg) do
     do_transform_incoming(Map.from_struct(msg))
   end
 
-  def transform_incoming(%{channel_id: channel_id} = msg) when is_map(msg) do
+  defp provider_message(%{channel_id: channel_id} = msg) when is_map(msg) do
     _ = channel_id
     do_transform_incoming(msg)
   end
 
-  def transform_incoming(%{"channel_id" => channel_id} = msg) when is_map(msg) do
+  defp provider_message(%{"channel_id" => channel_id} = msg) when is_map(msg) do
     _ = channel_id
     do_transform_incoming(msg)
   end
 
-  def transform_incoming(_), do: {:error, :unsupported_message_type}
+  defp provider_message(_) do
+    {:error, :unsupported_message_type}
+  end
 
   @impl true
   def send_message(channel_id, text, opts \\ []) do
@@ -142,14 +490,14 @@ defmodule Jido.Chat.Discord.Adapter do
     with {:ok, result} <-
            transport(opts).send_message(channel_id, text, SendOptions.transport_opts(opts)) do
       {:ok,
-       Response.new(%{
+       %{
          message_id: map_get(result, [:message_id, "message_id"]),
          channel_id: map_get(result, [:channel_id, "channel_id"]),
          timestamp: map_get(result, [:timestamp, "timestamp"]),
          channel_type: :discord,
          status: :sent,
          raw: result
-       })}
+       }}
     end
   end
 
@@ -180,14 +528,14 @@ defmodule Jido.Chat.Discord.Adapter do
              EditOptions.transport_opts(opts)
            ) do
       {:ok,
-       Response.new(%{
+       %{
          message_id: map_get(result, [:message_id, "message_id"]) || message_id,
          channel_id: map_get(result, [:channel_id, "channel_id"]) || channel_id,
          timestamp: map_get(result, [:timestamp, "timestamp"]),
          channel_type: :discord,
          status: :edited,
          raw: result
-       })}
+       }}
     end
   end
 
@@ -230,7 +578,7 @@ defmodule Jido.Chat.Discord.Adapter do
     with {:ok, info} <- fetch_metadata(channel_id, opts) do
       {:ok,
        %{
-         id: "discord:#{channel_id}",
+         id: to_string(channel_id),
          adapter_name: :discord,
          external_room_id: channel_id,
          metadata: info.metadata,
@@ -244,12 +592,8 @@ defmodule Jido.Chat.Discord.Adapter do
     opts = pick_opts(opts, [:transport, :nostrum_message_api])
 
     with {:ok, raw_message} <- transport(opts).fetch_message(channel_id, message_id, opts),
-         {:ok, incoming} <- transform_incoming(raw_message) do
-      {:ok,
-       Message.from_incoming(incoming,
-         adapter_name: :discord,
-         thread_id: "discord:#{incoming.external_room_id}"
-       )}
+         {:ok, incoming} <- provider_message(raw_message) do
+      {:ok, portable_message(incoming)}
     end
   end
 
@@ -295,11 +639,7 @@ defmodule Jido.Chat.Discord.Adapter do
     cond do
       interaction_id && is_binary(interaction_token) ->
         interaction_opts = pick_opts(opts, [:transport, :nostrum_interaction_api])
-
-        payload = %{
-          type: 4,
-          data: %{content: text, flags: 64}
-        }
+        payload = %{type: 4, data: %{content: text, flags: 64}}
 
         with {:ok, _response} <-
                transport(interaction_opts).create_interaction_response(
@@ -309,28 +649,28 @@ defmodule Jido.Chat.Discord.Adapter do
                  interaction_opts
                ) do
           {:ok,
-           EphemeralMessage.new(%{
+           %{
              id: "discord:interaction:#{interaction_id}",
              thread_id: "discord:interaction:#{interaction_id}",
              used_fallback: false,
              raw: payload,
              metadata: %{interaction_id: to_string(interaction_id)}
-           })}
+           }}
         end
 
       Keyword.get(opts, :fallback_to_dm, false) ->
         send_opts = Keyword.drop(opts, [:fallback_to_dm])
 
         with {:ok, dm_room_id} <- open_dm(user_id, send_opts),
-             {:ok, %Response{} = response} <- send_message(dm_room_id, text, send_opts) do
+             {:ok, %{} = response} <- send_message(dm_room_id, text, send_opts) do
           {:ok,
-           EphemeralMessage.new(%{
-             id: response.external_message_id || Jido.Chat.ID.generate!(),
+           %{
+             id: response.message_id || Jido.Chat.ID.generate!(),
              thread_id: "discord:#{dm_room_id}",
              used_fallback: true,
              raw: response.raw,
              metadata: %{channel_id: dm_room_id}
-           })}
+           }}
         end
 
       true ->
@@ -340,20 +680,19 @@ defmodule Jido.Chat.Discord.Adapter do
 
   @impl true
   def open_modal(channel_id, payload, opts \\ []) when is_map(payload) do
-    interaction_id = opts[:interaction_id]
-    interaction_token = opts[:interaction_token]
+    interaction_id = opts[:interaction_id] || Map.get(Map.get(payload, :metadata, %{}), :interaction_id)
+    interaction_token = opts[:interaction_token] || Map.get(Map.get(payload, :metadata, %{}), :interaction_token)
 
     cond do
       is_nil(interaction_id) or not is_binary(interaction_token) ->
         {:error, :missing_interaction_context}
 
+      Map.get(Map.get(payload, :metadata, %{}), :room_id, channel_id) != channel_id ->
+        {:error, :interaction_room_mismatch}
+
       true ->
         interaction_opts = pick_opts(opts, [:transport, :nostrum_interaction_api])
-
-        request_payload = %{
-          type: 9,
-          data: normalize_modal_payload(payload)
-        }
+        request_payload = %{type: 9, data: normalize_modal_payload(modal_payload(payload))}
 
         with {:ok, _response} <-
                transport(interaction_opts).create_interaction_response(
@@ -363,13 +702,13 @@ defmodule Jido.Chat.Discord.Adapter do
                  interaction_opts
                ) do
           {:ok,
-           ModalResult.new(%{
+           %{
              id: "discord:modal:#{interaction_id}",
              status: :opened,
              external_room_id: channel_id,
              raw: request_payload,
              metadata: %{interaction_id: to_string(interaction_id)}
-           })}
+           }}
         end
     end
   end
@@ -448,23 +787,28 @@ defmodule Jido.Chat.Discord.Adapter do
   @impl true
   def verify_webhook(%WebhookRequest{} = request, opts \\ []) do
     public_key =
-      opts[:discord_public_key] || opts[:public_key] ||
-        Application.get_env(:jido_chat_discord, :discord_public_key)
+      if Keyword.has_key?(opts, :public_key),
+        do: opts[:public_key],
+        else: opts[:discord_public_key] || Application.get_env(:jido_chat_discord, :discord_public_key)
 
     if is_nil(public_key) do
-      :ok
+      {:error, :missing_public_key}
     else
       verify_discord_signature(request, public_key, opts)
     end
   end
 
   @impl true
-  def parse_event(%WebhookRequest{} = request, _opts \\ []) do
-    parse_payload_event(request.payload, request.path)
+  def format_webhook_response(result, opts \\ [])
+
+  def format_webhook_response({:ok, %Jido.Chat.Delivery{}}, opts) do
+    if ping_request?(opts),
+      do: WebhookResponse.new(%{status: 200, body: %{type: 1}}),
+      else: WebhookResponse.accepted(%{ok: true})
   end
 
-  @impl true
-  def format_webhook_response(result, opts \\ [])
+  def format_webhook_response({:error, %Jido.Chat.Errors.Contract{code: code}}, _opts),
+    do: WebhookResponse.error(400, %{error: Atom.to_string(code)})
 
   def format_webhook_response({:ok, _chat, :noop}, opts) do
     if ping_request?(opts) do
@@ -483,128 +827,9 @@ defmodule Jido.Chat.Discord.Adapter do
   end
 
   def format_webhook_response({:error, reason}, _opts) do
-    WebhookResponse.error(400, %{error: to_string(reason)})
+    _ = reason
+    WebhookResponse.error(400, %{error: "rejected"})
   end
-
-  @impl true
-  def handle_webhook(%Jido.Chat{} = chat, payload, opts \\ []) when is_map(payload) do
-    request =
-      WebhookRequest.new(%{
-        adapter_name: :discord,
-        headers: opts[:headers] || %{},
-        payload: payload,
-        raw: opts[:raw_body] || payload,
-        metadata: %{raw_body: opts[:raw_body]}
-      })
-
-    with :ok <- verify_webhook(request, opts) do
-      with {:ok, parsed_event} <- parse_event(request, opts),
-           {:ok, updated_chat, incoming} <- route_parsed_event(chat, parsed_event, opts, request) do
-        {:ok, updated_chat, incoming}
-      end
-    end
-  end
-
-  @doc "Gateway helper for non-webhook event families routed into `Jido.Chat.process_*`."
-  @spec handle_gateway_event(Jido.Chat.t(), map() | {atom() | String.t(), map()}, keyword()) ::
-          {:ok, Jido.Chat.t(), term()} | {:error, term()}
-  def handle_gateway_event(chat, event, opts \\ [])
-
-  def handle_gateway_event(%Jido.Chat{} = chat, {event_name, payload}, opts)
-      when is_map(payload) do
-    handle_gateway_event(chat, %{event: event_name, payload: payload}, opts)
-  end
-
-  def handle_gateway_event(%Jido.Chat{} = chat, %{} = event, opts) do
-    event_name =
-      event[:event] || event["event"] || event[:type] || event["type"] ||
-        event[:t] || event["t"]
-
-    payload = event[:payload] || event["payload"] || event[:d] || event["d"] || event
-
-    case normalize_event_name(event_name) do
-      "MESSAGE_REACTION_ADD" -> process_gateway_reaction(chat, payload, true, opts)
-      "MESSAGE_REACTION_REMOVE" -> process_gateway_reaction(chat, payload, false, opts)
-      "MESSAGE_UPDATE" -> process_gateway_lifecycle(chat, payload, :message_updated, opts)
-      "MESSAGE_DELETE" -> process_gateway_lifecycle(chat, payload, :message_deleted, opts)
-      "MESSAGE_CREATE" -> handle_webhook(chat, payload, opts)
-      "INTERACTION_CREATE" -> handle_webhook(chat, payload, opts)
-      "MODAL_CLOSE" -> process_gateway_modal_close(chat, payload, opts)
-      _ -> {:error, :unsupported_gateway_event}
-    end
-  end
-
-  defp process_gateway_lifecycle(chat, payload, event_type, opts) do
-    with {:ok, envelope} <- MessageLifecycle.envelope(event_type, payload) do
-      Jido.Chat.process_event(chat, :discord, envelope, opts)
-    end
-  end
-
-  defp route_parsed_event(chat, :noop, _opts, %WebhookRequest{} = request) do
-    payload = request.payload
-
-    if interaction_ping_payload?(payload) do
-      {:ok, chat, synthetic_incoming("interaction", "discord", "ping", payload, :ping)}
-    else
-      {:error, :unsupported_message_type}
-    end
-  end
-
-  defp route_parsed_event(chat, %EventEnvelope{} = envelope, opts, _request) do
-    with {:ok, updated_chat, routed_envelope} <-
-           Jido.Chat.process_event(chat, :discord, envelope, opts),
-         {:ok, incoming} <- incoming_from_event(routed_envelope) do
-      {:ok, updated_chat, incoming}
-    end
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
-    do: {:ok, incoming}
-
-  defp incoming_from_event(%EventEnvelope{event_type: event_type, raw: raw})
-       when event_type in [:slash_command, :action, :modal_submit] do
-    channel_id = map_get(raw, [:channel_id, "channel_id"])
-    user = interaction_user(raw)
-    message_id = map_get(raw, [:id, "id"])
-
-    {:ok,
-     synthetic_incoming(
-       channel_id,
-       user.user_id,
-       message_id,
-       raw,
-       event_type
-     )}
-  end
-
-  defp incoming_from_event(_), do: {:error, :unsupported_message_type}
-
-  defp parse_payload_event(payload, path) when is_map(payload) do
-    cond do
-      interaction_ping_payload?(payload) ->
-        {:ok, :noop}
-
-      interaction_payload?(payload) ->
-        interaction_event_envelope(payload)
-
-      true ->
-        with {:ok, incoming} <- transform_incoming(payload) do
-          {:ok,
-           EventEnvelope.new(%{
-             adapter_name: :discord,
-             event_type: :message,
-             thread_id: thread_id(incoming),
-             channel_id: stringify(incoming.external_room_id),
-             message_id: stringify(incoming.external_message_id),
-             payload: incoming,
-             raw: payload,
-             metadata: %{path: path}
-           })}
-        end
-    end
-  end
-
-  defp parse_payload_event(_payload, _path), do: {:error, :unsupported_message_type}
 
   defp upload_transport_opts(opts, file_opt) do
     opts
@@ -623,9 +848,7 @@ defmodule Jido.Chat.Discord.Adapter do
 
   defp upload_response(%FileUpload{} = upload, result, channel_id) do
     attachment =
-      (result[:attachments] || result["attachments"] || [])
-      |> List.first()
-      |> normalize_map()
+      (result[:attachments] || result["attachments"] || []) |> List.first() |> normalize_map()
 
     delivered_kind =
       case attachment[:content_type] || attachment["content_type"] do
@@ -633,7 +856,7 @@ defmodule Jido.Chat.Discord.Adapter do
         _ -> upload.kind
       end
 
-    Response.new(%{
+    %{
       message_id: stringify(result[:message_id] || result["message_id"]),
       channel_id: stringify(result[:channel_id] || result["channel_id"] || channel_id),
       timestamp: result[:timestamp] || result["timestamp"],
@@ -652,10 +875,12 @@ defmodule Jido.Chat.Discord.Adapter do
         }
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
         |> Map.new()
-    })
+    }
   end
 
-  defp upload_input(%FileUpload{path: path}) when is_binary(path) and path != "", do: {:ok, path}
+  defp upload_input(%FileUpload{path: path}) when is_binary(path) and path != "" do
+    {:ok, path}
+  end
 
   defp upload_input(%FileUpload{data: data, filename: filename})
        when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
@@ -670,7 +895,9 @@ defmodule Jido.Chat.Discord.Adapter do
     {:error, :unsupported_remote_url}
   end
 
-  defp upload_input(_upload), do: {:error, :missing_file_source}
+  defp upload_input(_upload) do
+    {:error, :missing_file_source}
+  end
 
   defp upload_caption(%FileUpload{} = upload) do
     metadata = upload.metadata
@@ -679,226 +906,30 @@ defmodule Jido.Chat.Discord.Adapter do
       metadata[:transcript] || metadata["transcript"]
   end
 
-  defp normalize_map(%_{} = struct), do: Map.from_struct(struct)
-  defp normalize_map(map) when is_map(map), do: map
-  defp normalize_map(_), do: %{}
-
-  defp interaction_event_envelope(payload) do
-    type = map_get(payload, [:type, "type"])
-    channel_id = map_get(payload, [:channel_id, "channel_id"])
-    user = interaction_user(payload)
-
-    case type do
-      2 ->
-        slash_payload = %{
-          adapter_name: :discord,
-          channel_id: stringify(channel_id),
-          command: "/" <> to_string(map_get(payload, [:data, "data"]) |> map_get([:name, "name"])),
-          text: slash_arguments(payload),
-          user: user,
-          raw: payload,
-          metadata: %{interaction_type: type}
-        }
-
-        {:ok,
-         EventEnvelope.new(%{
-           adapter_name: :discord,
-           event_type: :slash_command,
-           thread_id: "discord:#{channel_id}",
-           channel_id: stringify(channel_id),
-           message_id: stringify(map_get(payload, [:id, "id"])),
-           payload: slash_payload,
-           raw: payload,
-           metadata: %{}
-         })}
-
-      3 ->
-        data = map_get(payload, [:data, "data"]) || %{}
-        message = map_get(payload, [:message, "message"]) || %{}
-
-        action_payload = %{
-          adapter_name: :discord,
-          thread_id: "discord:#{channel_id}",
-          message_id: stringify(map_get(data, [:message_id, "message_id"]) || map_get(message, [:id, "id"])),
-          action_id: map_get(data, [:custom_id, "custom_id"]),
-          value: inspect(map_get(data, [:values, "values"]) || %{}),
-          user: user,
-          raw: payload,
-          metadata: %{interaction_type: type}
-        }
-
-        {:ok,
-         EventEnvelope.new(%{
-           adapter_name: :discord,
-           event_type: :action,
-           thread_id: "discord:#{channel_id}",
-           channel_id: stringify(channel_id),
-           message_id: stringify(map_get(payload, [:id, "id"])),
-           payload: action_payload,
-           raw: payload,
-           metadata: %{}
-         })}
-
-      5 ->
-        data = map_get(payload, [:data, "data"]) || %{}
-
-        modal_payload = %{
-          adapter_name: :discord,
-          callback_id: map_get(data, [:custom_id, "custom_id"]),
-          view_id: map_get(payload, [:id, "id"]) |> stringify(),
-          values: normalize_modal_values(data),
-          user: user,
-          raw: payload,
-          metadata: %{interaction_type: type}
-        }
-
-        {:ok,
-         EventEnvelope.new(%{
-           adapter_name: :discord,
-           event_type: :modal_submit,
-           thread_id: "discord:#{channel_id}",
-           channel_id: stringify(channel_id),
-           message_id: stringify(map_get(payload, [:id, "id"])),
-           payload: modal_payload,
-           raw: payload,
-           metadata: %{}
-         })}
-
-      _ ->
-        {:error, :unsupported_interaction_type}
-    end
+  defp normalize_map(%_{} = struct) do
+    Map.from_struct(struct)
   end
 
-  defp process_gateway_reaction(chat, payload, added, opts) do
-    reaction_payload = %{
-      adapter_name: :discord,
-      thread_id: "discord:#{map_get(payload, [:channel_id, "channel_id"])}",
-      message_id: stringify(map_get(payload, [:message_id, "message_id"])),
-      emoji: reaction_emoji(payload),
-      added: added,
-      user: %{
-        user_id: stringify(map_get(payload, [:user_id, "user_id"]) || "unknown"),
-        user_name: stringify(map_get(payload, [:user_id, "user_id"]) || "unknown")
-      },
-      raw: payload,
-      metadata: %{}
-    }
-
-    with {:ok, updated_chat, event} <-
-           Jido.Chat.process_reaction(chat, :discord, reaction_payload, opts) do
-      {:ok, updated_chat, event}
-    end
+  defp normalize_map(map) when is_map(map) do
+    map
   end
 
-  defp process_gateway_modal_close(chat, payload, opts) do
-    modal_close_payload = %{
-      adapter_name: :discord,
-      callback_id: stringify(map_get(payload, [:custom_id, "custom_id"])),
-      view_id: stringify(map_get(payload, [:id, "id"])),
-      raw: payload,
-      metadata: %{}
-    }
-
-    with {:ok, updated_chat, event} <-
-           Jido.Chat.process_modal_close(chat, :discord, modal_close_payload, opts) do
-      {:ok, updated_chat, event}
-    end
+  defp normalize_map(_) do
+    %{}
   end
 
-  defp interaction_payload?(payload) when is_map(payload) do
-    type = map_get(payload, [:type, "type"])
-    type in [1, 2, 3, 5]
+  defp interaction_ping_payload?(payload) when is_map(payload) do
+    map_get(payload, [:type, "type"]) == 1
   end
-
-  defp interaction_ping_payload?(payload) when is_map(payload),
-    do: map_get(payload, [:type, "type"]) == 1
-
-  defp interaction_user(payload) do
-    member_user = map_get(payload, [:member, "member"]) |> map_get([:user, "user"])
-    user = member_user || map_get(payload, [:user, "user"]) || %{}
-
-    %{
-      user_id: stringify(map_get(user, [:id, "id"]) || "unknown"),
-      user_name:
-        map_get(user, [:username, "username"]) ||
-          stringify(map_get(user, [:id, "id"]) || "unknown"),
-      full_name:
-        map_get(user, [:global_name, "global_name"]) ||
-          map_get(user, [:username, "username"])
-    }
-  end
-
-  defp slash_arguments(payload) do
-    payload
-    |> map_get([:data, "data"])
-    |> map_get([:options, "options"])
-    |> case do
-      list when is_list(list) ->
-        list
-        |> Enum.map(fn entry -> map_get(entry, [:value, "value"]) end)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.map_join(" ", &to_string/1)
-
-      _ ->
-        ""
-    end
-  end
-
-  defp normalize_modal_values(data) do
-    data
-    |> map_get([:components, "components"])
-    |> case do
-      components when is_list(components) ->
-        Enum.reduce(components, %{}, fn component, acc ->
-          inner = map_get(component, [:components, "components"]) || []
-
-          Enum.reduce(inner, acc, fn field, inner_acc ->
-            custom_id = map_get(field, [:custom_id, "custom_id"])
-            value = map_get(field, [:value, "value"])
-            if is_nil(custom_id), do: inner_acc, else: Map.put(inner_acc, custom_id, value)
-          end)
-        end)
-
-      _ ->
-        %{}
-    end
-  end
-
-  defp synthetic_incoming(channel_id, user_id, message_id, raw, event_type) do
-    Incoming.new(%{
-      external_room_id: channel_id || "unknown",
-      external_user_id: user_id,
-      external_message_id: stringify(message_id),
-      text: nil,
-      raw: raw,
-      metadata: %{event_type: event_type}
-    })
-  end
-
-  defp reaction_emoji(payload) do
-    emoji = map_get(payload, [:emoji, "emoji"]) || %{}
-    map_get(emoji, [:name, "name"]) || ""
-  end
-
-  defp normalize_event_name(name) when is_atom(name),
-    do: name |> Atom.to_string() |> String.upcase()
-
-  defp normalize_event_name(name) when is_binary(name), do: String.upcase(name)
-  defp normalize_event_name(_), do: ""
 
   defp verify_discord_signature(%WebhookRequest{} = request, public_key, opts) do
-    signature =
-      request.headers["x-signature-ed25519"] ||
-        request.headers["X-Signature-Ed25519"]
+    signature = request.headers["x-signature-ed25519"] || request.headers["X-Signature-Ed25519"]
 
     timestamp =
-      request.headers["x-signature-timestamp"] ||
-        request.headers["X-Signature-Timestamp"]
+      request.headers["x-signature-timestamp"] || request.headers["X-Signature-Timestamp"]
 
     raw_body =
-      opts[:raw_body] ||
-        request.metadata[:raw_body] ||
-        request.metadata["raw_body"] ||
+      opts[:raw_body] || request.metadata[:raw_body] || request.metadata["raw_body"] ||
         request.raw
 
     with true <- is_binary(signature),
@@ -907,13 +938,10 @@ defmodule Jido.Chat.Discord.Adapter do
          {:ok, signature_bytes} <- decode_hex(signature),
          {:ok, public_key_bytes} <- decode_hex(public_key),
          true <-
-           :crypto.verify(
-             :eddsa,
-             :none,
-             timestamp <> raw_body,
-             signature_bytes,
-             [public_key_bytes, :ed25519]
-           ) do
+           :crypto.verify(:eddsa, :none, timestamp <> raw_body, signature_bytes, [
+             public_key_bytes,
+             :ed25519
+           ]) do
       :ok
     else
       _ -> {:error, :invalid_signature}
@@ -927,28 +955,41 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp transport(%{transport: transport}) when not is_nil(transport), do: transport
-  defp transport(opts) when is_list(opts), do: Keyword.get(opts, :transport, NostrumClient)
-  defp transport(_opts), do: NostrumClient
+  defp transport(%{transport: transport}) when not is_nil(transport) do
+    transport
+  end
 
-  defp thread_id(%Incoming{external_room_id: room_id, external_thread_id: nil}),
-    do: "discord:#{room_id}"
+  defp transport(opts) when is_list(opts) do
+    Keyword.get(opts, :transport, NostrumClient)
+  end
 
-  defp thread_id(%Incoming{external_room_id: room_id, external_thread_id: thread_id}),
-    do: "discord:#{room_id}:#{thread_id}"
+  defp transport(_opts) do
+    NostrumClient
+  end
 
-  defp get_map_value(map, keys) when is_map(map),
-    do: Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  defp get_map_value(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  end
 
-  defp get_nested_id(nil), do: nil
-  defp get_nested_id(author) when is_map(author), do: get_map_value(author, [:id, "id"])
+  defp get_nested_id(nil) do
+    nil
+  end
 
-  defp get_nested_username(nil), do: nil
+  defp get_nested_id(author) when is_map(author) do
+    get_map_value(author, [:id, "id"])
+  end
 
-  defp get_nested_username(author) when is_map(author),
-    do: get_map_value(author, [:username, "username"])
+  defp get_nested_username(nil) do
+    nil
+  end
 
-  defp get_nested_display_name(nil), do: nil
+  defp get_nested_username(author) when is_map(author) do
+    get_map_value(author, [:username, "username"])
+  end
+
+  defp get_nested_display_name(nil) do
+    nil
+  end
 
   defp get_nested_display_name(author) when is_map(author) do
     get_map_value(author, [:global_name, "global_name"]) ||
@@ -971,7 +1012,7 @@ defmodule Jido.Chat.Discord.Adapter do
     chat_type = parse_chat_type(msg)
 
     {:ok,
-     Incoming.new(%{
+     %{
        external_room_id: route.external_room_id,
        external_user_id: get_map_value(msg, [:author, "author"]) |> get_nested_id(),
        text: get_map_value(msg, [:content, "content"]),
@@ -995,7 +1036,7 @@ defmodule Jido.Chat.Discord.Adapter do
          metadata: %{parent_id: route.parent_id, channel_id: route.channel_id}
        },
        raw: msg
-     })}
+     }}
   end
 
   defp thread_route(msg) when is_map(msg) do
@@ -1007,9 +1048,7 @@ defmodule Jido.Chat.Discord.Adapter do
         _ -> nil
       end
 
-    parent_id =
-      stringify(get_map_value(msg, [:parent_id, "parent_id"]) || nested_parent_id)
-
+    parent_id = stringify(get_map_value(msg, [:parent_id, "parent_id"]) || nested_parent_id)
     channel_type = get_map_value(msg, [:type, "type"])
 
     if thread_channel_type?(channel_type) or not is_nil(parent_id) do
@@ -1031,7 +1070,9 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp thread_channel_type?(type), do: type in [10, 11, 12, :thread, "thread"]
+  defp thread_channel_type?(type) do
+    type in [10, 11, 12, :thread, "thread"]
+  end
 
   defp extract_media(msg) when is_map(msg) do
     context = %{
@@ -1039,21 +1080,20 @@ defmodule Jido.Chat.Discord.Adapter do
       message_id: stringify(get_map_value(msg, [:id, "id"]))
     }
 
-    msg
-    |> get_map_value([:attachments, "attachments"])
-    |> normalize_attachments(context)
+    msg |> get_map_value([:attachments, "attachments"]) |> normalize_attachments(context)
   end
 
   defp normalize_attachments(attachments, context) when is_list(attachments) do
-    attachments
-    |> Enum.map(&normalize_attachment(&1, context))
-    |> Enum.reject(&is_nil/1)
+    attachments |> Enum.map(&normalize_attachment(&1, context)) |> Enum.reject(&is_nil/1)
   end
 
-  defp normalize_attachments(_, _context), do: []
+  defp normalize_attachments(_, _context) do
+    []
+  end
 
-  defp normalize_attachment(%_{} = attachment, context),
-    do: attachment |> Map.from_struct() |> normalize_attachment(context)
+  defp normalize_attachment(%_{} = attachment, context) do
+    attachment |> Map.from_struct() |> normalize_attachment(context)
+  end
 
   defp normalize_attachment(attachment, context) when is_map(attachment) do
     media_type =
@@ -1083,16 +1123,21 @@ defmodule Jido.Chat.Discord.Adapter do
     })
   end
 
-  defp normalize_attachment(_, _context), do: nil
+  defp normalize_attachment(_, _context) do
+    nil
+  end
 
-  defp media_reference(url) when is_binary(url) and url != "", do: {:ok, url, nil}
+  defp media_reference(url) when is_binary(url) and url != "" do
+    {:ok, url, nil}
+  end
 
-  defp media_reference(%Media{url: url, metadata: metadata})
-       when is_binary(url) and url != "" do
+  defp media_reference(%Media{url: url, metadata: metadata}) when is_binary(url) and url != "" do
     {:ok, url, metadata}
   end
 
-  defp media_reference(_reference), do: {:error, :invalid_media_reference}
+  defp media_reference(_reference) do
+    {:error, :invalid_media_reference}
+  end
 
   defp retry_media_download(context, opts, original_error) when is_map(context) do
     channel_id = get_map_value(context, [:channel_id, "channel_id"])
@@ -1109,7 +1154,9 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp retry_media_download(_context, _opts, original_error), do: original_error
+  defp retry_media_download(_context, _opts, original_error) do
+    original_error
+  end
 
   defp refreshed_attachment_url(message, context) when is_map(message) do
     attachment_id = stringify(get_map_value(context, [:attachment_id, "attachment_id"]))
@@ -1118,8 +1165,7 @@ defmodule Jido.Chat.Discord.Adapter do
 
     attachment =
       Enum.find(attachments, fn item ->
-        not is_nil(attachment_id) and
-          stringify(get_map_value(item, [:id, "id"])) == attachment_id
+        not is_nil(attachment_id) and stringify(get_map_value(item, [:id, "id"])) == attachment_id
       end) ||
         Enum.find(attachments, fn item ->
           not is_nil(filename) and
@@ -1132,14 +1178,13 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp refreshed_attachment_url(_message, _context),
-    do: {:error, :refreshed_attachment_not_found}
+  defp refreshed_attachment_url(_message, _context) do
+    {:error, :refreshed_attachment_not_found}
+  end
 
   defp attachment_kind(media_type, filename, url) do
-    media_kind_from_type(media_type) ||
-      media_kind_from_reference(filename) ||
-      media_kind_from_reference(url) ||
-      :file
+    media_kind_from_type(media_type) || media_kind_from_reference(filename) ||
+      media_kind_from_reference(url) || :file
   end
 
   defp media_kind_from_type(media_type) when is_binary(media_type) do
@@ -1151,7 +1196,9 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp media_kind_from_type(_media_type), do: nil
+  defp media_kind_from_type(_media_type) do
+    nil
+  end
 
   defp media_kind_from_reference(reference) when is_binary(reference) do
     reference
@@ -1164,36 +1211,47 @@ defmodule Jido.Chat.Discord.Adapter do
     |> then(&Map.get(@media_kind_extensions, &1))
   end
 
-  defp media_kind_from_reference(_reference), do: nil
+  defp media_kind_from_reference(_reference) do
+    nil
+  end
 
   defp normalize_media_type(value) when is_binary(value) do
     trimmed = String.trim(value)
 
-    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
-      do: trimmed,
-      else: nil
+    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)) do
+      trimmed
+    else
+      nil
+    end
   end
 
-  defp normalize_media_type(_value), do: nil
+  defp normalize_media_type(_value) do
+    nil
+  end
 
   defp canonical_media_type(value) do
-    value
-    |> String.split(";", parts: 2)
-    |> hd()
-    |> String.trim()
-    |> String.downcase()
+    value |> String.split(";", parts: 2) |> hd() |> String.trim() |> String.downcase()
   end
 
   defp get_non_blank_map_value(map, keys) when is_map(map) do
     Enum.find_value(keys, fn key ->
       case Map.get(map, key) do
-        value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
-        _other -> nil
+        value when is_binary(value) ->
+          if String.trim(value) == "" do
+            nil
+          else
+            value
+          end
+
+        _other ->
+          nil
       end
     end)
   end
 
-  defp normalize_channel_info(%ChannelInfo{} = info, _channel_id), do: info
+  defp normalize_channel_info(%ChannelInfo{} = info, _channel_id) do
+    info
+  end
 
   defp normalize_channel_info(%{} = info, channel_id) do
     type = map_get(info, [:type, "type"])
@@ -1207,29 +1265,46 @@ defmodule Jido.Chat.Discord.Adapter do
     })
   end
 
-  defp normalize_channel_info(_other, channel_id),
-    do: ChannelInfo.new(%{id: to_string(channel_id)})
+  defp normalize_channel_info(_other, channel_id) do
+    ChannelInfo.new(%{id: to_string(channel_id)})
+  end
 
   defp normalize_messages(messages) when is_list(messages) do
-    Enum.flat_map(messages, fn raw_message ->
-      case transform_incoming(raw_message) do
-        {:ok, incoming} -> [Message.from_incoming(incoming, adapter_name: :discord)]
-        _ -> []
+    Enum.map(messages, fn raw_message ->
+      case provider_message(raw_message) do
+        {:ok, incoming} -> portable_message(incoming)
+        _ -> raise ArgumentError, "invalid query item"
       end
     end)
   end
 
-  defp normalize_thread_summary(channel_id, raw_thread) when is_map(raw_thread) do
+  defp normalize_thread_summary(_channel_id, raw_thread) when is_map(raw_thread) do
     thread_id = map_get(raw_thread, [:id, "id"])
 
     %{
-      id: "discord:#{channel_id}:#{thread_id}",
+      id: to_string(thread_id),
       reply_count:
         map_get(raw_thread, [:message_count, "message_count"]) ||
           map_get(raw_thread, [:member_count, "member_count"]),
       metadata: raw_thread
     }
   end
+
+  defp modal_payload(%Jido.Chat.Modal{} = modal) do
+    %{
+      custom_id: modal.callback_id,
+      title: modal.title,
+      components:
+        Enum.map(modal.elements, fn element ->
+          %{
+            type: 1,
+            components: [%{type: 4, custom_id: element.id, label: element.label, style: 1, required: element.required}]
+          }
+        end)
+    }
+  end
+
+  defp modal_payload(payload), do: payload
 
   defp normalize_modal_payload(payload) when is_map(payload) do
     %{
@@ -1249,19 +1324,33 @@ defmodule Jido.Chat.Discord.Adapter do
     end
   end
 
-  defp map_get(nil, _keys), do: nil
+  defp map_get(nil, _keys) do
+    nil
+  end
 
   defp map_get(map, keys) when is_map(map) and is_list(keys) do
     Enum.find_value(keys, fn key -> Map.get(map, key) end)
   end
 
-  defp map_get(_other, _keys), do: nil
+  defp map_get(_other, _keys) do
+    nil
+  end
 
-  defp stringify(nil), do: nil
-  defp stringify(value) when is_binary(value), do: value
-  defp stringify(value), do: to_string(value)
+  defp stringify(nil) do
+    nil
+  end
 
-  defp pick_opts(opts, allowed_keys) when is_list(opts), do: Keyword.take(opts, allowed_keys)
+  defp stringify(value) when is_binary(value) do
+    value
+  end
+
+  defp stringify(value) do
+    to_string(value)
+  end
+
+  defp pick_opts(opts, allowed_keys) when is_list(opts) do
+    Keyword.take(opts, allowed_keys)
+  end
 
   defp normalize_ingress_opts(opts) do
     ingress = Keyword.get(opts, :ingress, %{}) |> ensure_map()
@@ -1277,8 +1366,13 @@ defmodule Jido.Chat.Discord.Adapter do
     |> ensure_map()
   end
 
-  defp ensure_map(%{} = map), do: map
-  defp ensure_map(_), do: %{}
+  defp ensure_map(%{} = map) do
+    map
+  end
+
+  defp ensure_map(_) do
+    %{}
+  end
 
   defp ingress_mode(ingress) do
     case get_map_value(ingress, [:mode, "mode"]) do
@@ -1292,23 +1386,27 @@ defmodule Jido.Chat.Discord.Adapter do
   end
 
   defp validate_sink_mfa({module, function, args})
-       when is_atom(module) and is_atom(function) and is_list(args),
-       do: {:ok, {module, function, args}}
+       when is_atom(module) and is_atom(function) and is_list(args) do
+    {:ok, {module, function, args}}
+  end
 
-  defp validate_sink_mfa(_), do: {:error, :invalid_sink_mfa}
+  defp validate_sink_mfa(_) do
+    {:error, :invalid_sink_mfa}
+  end
 
-  defp gateway_worker_opts(bridge_id, ingress, sink_mfa) do
+  defp gateway_worker_opts(bridge_id, binding, ingress, sink_mfa) do
     [
       bridge_id: bridge_id,
+      binding: binding,
       sink_mfa: sink_mfa,
       sink_opts: [bridge_id: bridge_id],
       event_source_mfa: get_map_value(ingress, [:event_source_mfa, "event_source_mfa"]),
       poll_interval_ms: get_map_value(ingress, [:poll_interval_ms, "poll_interval_ms"]) || 250,
-      max_backoff_ms: get_map_value(ingress, [:max_backoff_ms, "max_backoff_ms"]) || 5_000
+      max_backoff_ms: get_map_value(ingress, [:max_backoff_ms, "max_backoff_ms"]) || 5000
     ]
   end
 
-  defp gateway_listener_specs(bridge_id, ingress, sink_mfa) do
+  defp gateway_listener_specs(bridge_id, binding, ingress, sink_mfa) do
     case ingress_source(ingress) do
       :nostrum ->
         {:ok,
@@ -1325,6 +1423,7 @@ defmodule Jido.Chat.Discord.Adapter do
              {GatewayWorker,
               gateway_worker_opts(
                 bridge_id,
+                binding,
                 Map.put(
                   ingress,
                   :event_source_mfa,
@@ -1342,7 +1441,7 @@ defmodule Jido.Chat.Discord.Adapter do
             {:ok,
              [
                Supervisor.child_spec(
-                 {GatewayWorker, gateway_worker_opts(bridge_id, ingress, sink_mfa)},
+                 {GatewayWorker, gateway_worker_opts(bridge_id, binding, ingress, sink_mfa)},
                  id: {:discord_gateway_worker, bridge_id}
                )
              ]}
@@ -1361,34 +1460,31 @@ defmodule Jido.Chat.Discord.Adapter do
     event_source_mfa = get_map_value(ingress, [:event_source_mfa, "event_source_mfa"])
 
     cond do
-      source in [:nostrum, "nostrum"] ->
-        :nostrum
-
-      source in [:mfa, "mfa"] ->
-        :mfa
-
-      source in [nil, ""] and is_tuple(event_source_mfa) ->
-        :mfa
-
-      source in [nil, ""] ->
-        :nostrum
-
-      true ->
-        :invalid
+      source in [:nostrum, "nostrum"] -> :nostrum
+      source in [:mfa, "mfa"] -> :mfa
+      source in [nil, ""] and is_tuple(event_source_mfa) -> :mfa
+      source in [nil, ""] -> :nostrum
+      true -> :invalid
     end
   end
 
   defp nostrum_gateway_buffer_opts(bridge_id, ingress) do
     [
       bridge_id: bridge_id,
-      max_events: get_map_value(ingress, [:max_events, "max_events"]) || 1_000
+      max_events: get_map_value(ingress, [:max_events, "max_events"]) || 1000
     ]
   end
 
   defp nostrum_gateway_listener_opts(bridge_id, ingress) do
-    [
-      bridge_id: bridge_id,
-      event_names: get_map_value(ingress, [:event_names, "event_names"])
-    ]
+    [bridge_id: bridge_id, event_names: get_map_value(ingress, [:event_names, "event_names"])]
+  end
+
+  defp verified_payload(request, opts) do
+    body = opts[:raw_body] || request.metadata[:raw_body] || request.metadata["raw_body"] || request.raw
+
+    case Jason.decode(body) do
+      {:ok, %{} = payload} -> {:ok, payload}
+      _ -> Jido.Chat.Signal.Policy.error(:invalid_delivery)
+    end
   end
 end
