@@ -1,8 +1,6 @@
 defmodule Jido.Chat.Discord.Signal.StartMessageThread do
   @moduledoc "Typed request to start a thread on an existing Discord message."
-  use Jido.Chat.Signal.Definition,
-    owner: :discord,
-    kind: :command,
+  use Jido.Signal,
     type: "jido.chat.discord.command.start_message_thread",
     dataschema: "urn:jido:chat:discord:start_message_thread:1",
     default_source: "urn:jido:chat:producer:local",

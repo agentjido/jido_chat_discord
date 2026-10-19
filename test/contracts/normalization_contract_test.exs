@@ -28,6 +28,7 @@ defmodule Jido.Chat.Discord.NormalizationContractTest do
       assert repeated.id == delivery.id
       assert Enum.map(repeated.signals, &{&1.id, &1.data}) == Enum.map(delivery.signals, &{&1.id, &1.data})
       assert fact.type == type
+      assert %Jido.Signal.Trace{} = Jido.Signal.Trace.get(fact)
       assert Map.take(fact.data, Map.keys(expected)) == expected
       assert fact.source == c.source
       assert fact.subject == Chat.Signal.Identity.conversation_subject(c.id, "202")

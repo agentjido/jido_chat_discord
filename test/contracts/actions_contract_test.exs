@@ -2,8 +2,8 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
   use Covenant.Case, component: "jido_chat_discord.actions", async: true
   @moduletag capture_log: true
   import Jido.Chat.Discord.Fixtures
-  alias Jido.Chat.Discord.Signal, as: D
   alias Jido.Chat
+  alias Jido.Chat.Discord.Signal, as: D
 
   defmodule MixedFlow do
     use Jido.Flow, name: "discord_contract_flow"
@@ -95,8 +95,8 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
 
     assert_receive {:sent, "first"}
     assert_receive {:sent, "second"}
-    assert result.core.extensions["causationid"] == core.id
-    assert result.native.extensions["causationid"] == native.id
+    assert result.core.extensions["jidocausationid"] == core.id
+    assert result.native.extensions["jidocausationid"] == native.id
     assert result.core.data["result"]["text"] == "first"
     assert result.native.data["result"]["text"] == "second"
   end
@@ -152,7 +152,7 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
     assert {:error, %Chat.Error{code: :rate_limited, signal: failed} = error} = Chat.execute(c, request)
     assert failed.data["retry_after_ms"] == 123
     assert failed.data["outcome"] == "rejected"
-    assert failed.extensions["causationid"] == request.id
+    assert failed.extensions["jidocausationid"] == request.id
     refute inspect(error) =~ secret
     assert_receive :called
     refute_receive :called, 20
@@ -195,7 +195,7 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
       action = Enum.find(Jido.Chat.Discord.actions(), &(&1.signal_definition() == definition))
       private = [interaction: interaction(c, "202", "909")]
       assert {:ok, completed} = Jido.Chat.execute(c, signal, options: private)
-      assert completed.extensions["causationid"] == signal.id
+      assert completed.extensions["jidocausationid"] == signal.id
       assert completed.extensions["traceparent"] == signal.extensions["traceparent"]
       assert completed.data["request_id"] == signal.data["request_id"]
       assert {:ok, _} = Jido.Signal.Catalog.validate(Jido.Chat.catalog(c), completed)

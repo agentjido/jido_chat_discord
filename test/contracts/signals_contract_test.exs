@@ -21,10 +21,10 @@ defmodule Jido.Chat.Discord.SignalsContractTest do
     assert length(definitions) == 9
 
     for {definition, suffix, data} <- cases() do
-      assert definition.__signal_owner__() == :discord
-      assert definition.__signal_kind__() == :command
+      assert Jido.Signal.defined?(definition)
       assert definition.type() == "jido.chat.discord.command." <> suffix
-      assert definition.dataschema() == "urn:jido:chat:discord:" <> suffix <> ":1"
+      version = if definition == D.RespondInteraction, do: "2", else: "1"
+      assert definition.dataschema() == "urn:jido:chat:discord:" <> suffix <> ":" <> version
       actual_schema = definition.schema() |> Zoi.to_json_schema() |> Jason.encode!() |> Jason.decode!()
       assert actual_schema == schemas[suffix]
       signal = request(definition, data)
@@ -52,7 +52,7 @@ defmodule Jido.Chat.Discord.SignalsContractTest do
             [extensions: %{"private" => "hidden"}],
             [source: "https://user:pass@example.com"]
           ] do
-        assert {:error, %Jido.Chat.Errors.Contract{}} = definition.new(base, opts)
+        assert {:error, %Jido.Chat.Errors.Contract{}} = Jido.Chat.Signal.Policy.new(definition, base, opts)
       end
 
       for value <- [
@@ -68,7 +68,7 @@ defmodule Jido.Chat.Discord.SignalsContractTest do
             D.StartMessageThread -> Map.put(base, "name", value)
           end
 
-        assert {:error, %Jido.Chat.Errors.Contract{}} = definition.new(changed)
+        assert {:error, %Jido.Chat.Errors.Contract{}} = Jido.Chat.Signal.Policy.new(definition, changed)
       end
 
       oversized =
@@ -84,7 +84,8 @@ defmodule Jido.Chat.Discord.SignalsContractTest do
           )
         )
 
-      assert {:error, %Jido.Chat.Errors.Contract{code: :signal_too_large}} = definition.new(oversized)
+      assert {:error, %Jido.Chat.Errors.Contract{code: :signal_too_large}} =
+               Jido.Chat.Signal.Policy.new(definition, oversized)
     end
   end
 end

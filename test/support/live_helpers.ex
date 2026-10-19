@@ -29,7 +29,7 @@ defmodule Jido.Chat.Discord.LiveHelpers do
     if request do
       assert signal.data["request_id"] == request.data["request_id"]
       assert signal.data["operation"] == request.type
-      assert signal.extensions["causationid"] == request.id
+      assert signal.extensions["jidocausationid"] == request.id
       assert signal.extensions["traceparent"] == request.extensions["traceparent"]
       assert signal.extensions["tracestate"] == "discord=live"
     end

@@ -15,6 +15,6 @@ Tests use fixed expectations and a recording transport. Live checks are separate
 
 ### jido_chat_discord.signals.I2 — Construction follows Chat policy
 - **scope:** Public signals boundary.
-- **must:** Constructors reject nested private keys, unsafe JSON, bad context, unknown or duplicate options, and encoded data above the shared limit.
+- **must:** Chat policy constructors and admission reject nested private keys, unsafe JSON, bad context, unknown or duplicate options, and encoded data above the shared limit.
 - **kind:** functional
 - **status:** active

@@ -6,7 +6,7 @@ defmodule Jido.Chat.Discord.LiveReply do
   def run(params, context) do
     if String.starts_with?(params["text"] || "", "jido-discord-source-probe:") do
       command =
-        Jido.Chat.Signal.SendMessage.new!(%{
+        Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.SendMessage, %{
           "client_id" => context.chat.client_id,
           "request_id" => params["item_id"] <> ":reply",
           "room_id" => params["room_id"],

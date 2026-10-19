@@ -186,7 +186,7 @@ defmodule Jido.Chat.Discord.Normalizer do
     room = data["room_id"]
     subject = if is_binary(room) and room != "", do: Signal.Identity.conversation_subject(c.client.id, room)
 
-    definition.new(data |> compact() |> Map.merge(%{"item_id" => item, "delivery_id" => c.delivery}),
+    Signal.Policy.new(definition, data |> compact() |> Map.merge(%{"item_id" => item, "delivery_id" => c.delivery}),
       id: item,
       source: c.client.source,
       subject: subject

@@ -68,7 +68,7 @@ defmodule Jido.Chat.Discord.LiveUITest do
       assert_receive {:interaction_result, fact, request, {:ok, completed}, elapsed}, 120_000
       assert elapsed >= 0 and elapsed < 3_000
       L.complete({:ok, completed}, c, request)
-      assert completed.extensions["causationid"] == request.id
+      assert completed.extensions["jidocausationid"] == request.id
       assert {:ok, _} = Jido.Signal.Catalog.validate(Jido.Chat.catalog(c), fact)
 
       case expected do

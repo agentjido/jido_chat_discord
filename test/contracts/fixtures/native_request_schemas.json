@@ -21,12 +21,22 @@
         "minLength": 1
       },
       "response_type": {
-        "enum": [
-          4,
-          5,
-          6,
-          7,
-          9
+        "anyOf": [
+          {
+            "const": 4
+          },
+          {
+            "const": 5
+          },
+          {
+            "const": 6
+          },
+          {
+            "const": 7
+          },
+          {
+            "const": 9
+          }
         ]
       },
       "data": {

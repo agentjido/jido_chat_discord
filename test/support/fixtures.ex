@@ -81,7 +81,11 @@ defmodule Jido.Chat.Discord.Fixtures do
 
   @doc false
   def request(definition, data),
-    do: definition.new!(Map.merge(%{"client_id" => "discord-test", "request_id" => Jido.Signal.ID.generate!()}, data))
+    do:
+      Jido.Chat.Signal.Policy.new!(
+        definition,
+        Map.merge(%{"client_id" => "discord-test", "request_id" => Jido.Signal.ID.generate!()}, data)
+      )
 end
 
 defmodule Jido.Chat.Discord.TestHTTP do

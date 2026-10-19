@@ -2,7 +2,7 @@ defmodule Jido.Chat.Discord.SourceTest do
   use ExUnit.Case, async: true
   @moduletag capture_log: true
   import Jido.Chat.Discord.Fixtures
-  alias Jido.Chat.Discord.{Source, GatewayWorker, TestGateway}
+  alias Jido.Chat.Discord.{GatewayWorker, Source, TestGateway}
 
   defp start_source(extra \\ []) do
     c =

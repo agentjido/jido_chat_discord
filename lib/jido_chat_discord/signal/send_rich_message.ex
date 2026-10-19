@@ -1,8 +1,6 @@
 defmodule Jido.Chat.Discord.Signal.SendRichMessage do
   @moduledoc "Typed Discord message request with embeds and native components."
-  use Jido.Chat.Signal.Definition,
-    owner: :discord,
-    kind: :command,
+  use Jido.Signal,
     type: "jido.chat.discord.command.send_rich_message",
     dataschema: "urn:jido:chat:discord:send_rich_message:1",
     default_source: "urn:jido:chat:producer:local",

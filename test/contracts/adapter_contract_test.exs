@@ -53,7 +53,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
       {Chat.Signal.GetThreadParticipants, %{"room_id" => "202", "thread_id" => "555"}},
       {Chat.Signal.MarkAsRead, %{"room_id" => "202", "message_id" => "101"}},
       {Chat.Signal.PostEphemeral, %{"room_id" => "202", "user_id" => "404", "text" => "hello"}},
-      {Chat.Signal.OpenModal, %{"room_id" => "202", "modal" => %{}}},
+      {Chat.Signal.OpenModal, %{"room_id" => "202", "modal" => %{"title" => "Form"}}},
       {Chat.Signal.LoadOptions,
        %{"room_id" => "202", "interaction_id" => "909", "query" => "", "action_id" => "action"}}
     ]
@@ -63,7 +63,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
       assert {:error, %Chat.Error{code: :unsupported, signal: failed}} = Chat.execute(c, signal)
       assert failed.type == signal.type <> ".failed"
       assert failed.data["outcome"] == "not_attempted"
-      assert failed.extensions["causationid"] == signal.id
+      assert failed.extensions["jidocausationid"] == signal.id
       assert {:ok, _} = Jido.Signal.Catalog.validate(Chat.catalog(c), failed)
     end
   end
@@ -84,7 +84,8 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
         )
 
       s =
-        Chat.Signal.SendMessage.new!(
+        Jido.Chat.Signal.Policy.new!(
+          Chat.Signal.SendMessage,
           %{"client_id" => id, "request_id" => "fixed-request", "room_id" => "202", "text" => "hello"},
           extensions: %{
             "traceparent" => "00-11111111111111111111111111111111-2222222222222222-01",
@@ -97,7 +98,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
       assert completed.subject == Chat.Signal.Identity.conversation_subject(id, "202")
       assert completed.data["result"]["id"] == provider
       assert completed.data["request_id"] == "fixed-request"
-      assert completed.extensions == Map.put(s.extensions, "causationid", s.id)
+      assert completed.extensions == Map.put(s.extensions, "jidocausationid", s.id)
       refute Jason.encode!(Jido.Signal.to_map(completed)) =~ token
     end
   end

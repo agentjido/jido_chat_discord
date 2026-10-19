@@ -2,7 +2,7 @@ defmodule Jido.Chat.Discord.SourceContractTest do
   use Covenant.Case, component: "jido_chat_discord.source", async: true
   import Jido.Chat.Discord.Fixtures
   import ExUnit.CaptureLog
-  alias Jido.Chat.Discord.{Source, Interaction, TestGateway}
+  alias Jido.Chat.Discord.{Interaction, Source, TestGateway}
 
   def put(private, target, result) do
     send(target, {:private, private})
