@@ -9,9 +9,9 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
     use Jido.Flow, name: "discord_contract_flow"
 
     flow do
-      step("core", action: Jido.Chat.SendMessage, params: %{signal: input(:core)})
-      step("native", action: Jido.Chat.Discord.SendRichMessage, params: %{signal: input(:native)}, needs: ["core"])
-      output(%{core: result("core", [:signal]), native: result("native", [:signal])})
+      step("core", action: Jido.Chat.SendMessage, params: input(:core))
+      step("native", action: Jido.Chat.Discord.SendRichMessage, params: input(:native), needs: ["core"])
+      output(%{core: result("core"), native: result("native")})
     end
   end
 
@@ -91,14 +91,18 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
     native = request(Chat.Discord.Signal.SendRichMessage, %{"room_id" => "202", "text" => "second"})
 
     assert {:ok, result} =
-             Jido.Exec.run(MixedFlow, %{core: core, native: native}, %{client: c, options: []}, max_attempts: 1)
+             Jido.Exec.run(MixedFlow, %{core: core.data, native: native.data}, %{client: c, options: []},
+               max_attempts: 1
+             )
 
     assert_receive {:sent, "first"}
     assert_receive {:sent, "second"}
-    assert result.core.extensions["jidocausationid"] == core.id
-    assert result.native.extensions["jidocausationid"] == native.id
-    assert result.core.data["result"]["text"] == "first"
-    assert result.native.data["result"]["text"] == "second"
+    assert result.core["result"]["text"] == "first"
+    assert result.native["result"]["text"] == "second"
+    assert {:ok, first} = Chat.SendMessage.reply(core, result.core, source: c.source)
+    assert {:ok, second} = Chat.Discord.SendRichMessage.reply(native, result.native, source: c.source)
+    assert first.extensions["jidocausationid"] == core.id
+    assert second.extensions["jidocausationid"] == native.id
   end
 
   @tag obligation: "jido_chat_discord.actions.I3"
@@ -181,7 +185,9 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
             %{signal | extensions: %{"traceparent" => "invalid"}}
           ] do
         assert {:error, _} = Jido.Chat.execute(c, altered)
-        assert {:error, _} = Jido.Exec.run(action, %{signal: altered}, %{client: c, options: []}, max_attempts: 1)
+
+        assert {:error, _} =
+                 Jido.Chat.Discord.ActionHelpers.execute(action, altered, %{client: c, options: []}, max_attempts: 1)
       end
     end
   end
@@ -204,7 +210,7 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
       refute Jason.encode!(Jido.Signal.to_map(completed)) =~ private[:interaction].token
 
       assert {:ok, %{signal: second}} =
-               Jido.Exec.run(action, %{signal: signal}, %{client: c, options: private}, max_attempts: 1)
+               Jido.Chat.Discord.ActionHelpers.execute(action, signal, %{client: c, options: private}, max_attempts: 1)
 
       assert second.data == completed.data
     end
