@@ -26,13 +26,13 @@ defmodule Jido.Chat.Discord.MixProject do
       docs: docs(),
       test_coverage: [
         tool: ExCoveralls,
-        summary: [threshold: 0],
+        summary: [threshold: 90],
         export: "cov"
       ],
       dialyzer: [
         plt_local_path: "priv/plts/project.plt",
         plt_core_path: "priv/plts/core.plt",
-        plt_add_apps: [:mix, :nostrum]
+        plt_add_apps: [:mix, :jido, :ex_unit]
       ]
     ]
   end
@@ -45,7 +45,10 @@ defmodule Jido.Chat.Discord.MixProject do
         cover: :test,
         coveralls: :test,
         "coveralls.github": :test,
-        "coveralls.html": :test
+        "coveralls.json": :test,
+        "coveralls.html": :test,
+        "test.contracts": :test,
+        "covenant.check": :test
       ]
     ]
   end
@@ -59,41 +62,20 @@ defmodule Jido.Chat.Discord.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # The published beta lacks the Signal API used by this migration.
-  defp signal_test_dependency do
-    {:jido_signal,
-     git: "https://github.com/agentjido/jido_signal.git",
-     ref: "d6611eca1c95eb507843baceb55991e4801d8421",
-     only: [:dev, :test],
-     override: true}
-  end
-
-  defp chat_dependency do
-    case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
-      {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
-        {:jido_chat, path: Path.expand(path, __DIR__), override: true}
-
-      {env, _} when env in [:dev, :test] ->
-        {:jido_chat,
-         git: "https://github.com/agentjido/jido_chat.git",
-         ref: "2a9c21a860cb8c5f1069a865a981a8be035f56c0",
-         override: true}
-
-      _ ->
-        {:jido_chat, "~> 2.0"}
-    end
-  end
-
   defp deps do
     [
-      chat_dependency(),
-      signal_test_dependency(),
-      {:nostrum, "~> 0.10", runtime: false},
+      # Runtime dependencies
+      {:gun, "~> 2.0"},
+      {:jason, "~> 1.4"},
+      {:jido_chat, "~> 3.0.0-dev"},
       {:req, "~> 0.6"},
-      {:dotenvy, "~> 1.1", only: [:test]},
+
+      # Development and test dependencies
+      {:covenant, "~> 0.2.0", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:doctor, "~> 0.21", only: [:dev, :test], runtime: false},
+      {:dotenvy, "~> 1.1", only: :test},
       {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: [:dev, :test]},
       {:git_hooks, "~> 0.8", only: [:dev, :test], runtime: false},
@@ -104,6 +86,7 @@ defmodule Jido.Chat.Discord.MixProject do
   defp aliases do
     [
       setup: ["deps.get"],
+      "test.contracts": ["covenant.check"],
       install_hooks: ["git_hooks.install"],
       q: ["quality"],
       cover: ["coveralls"],

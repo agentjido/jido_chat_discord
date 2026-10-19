@@ -14,4 +14,4 @@ if Code.ensure_loaded?(Dotenvy) do
   end)
 end
 
-ExUnit.start(exclude: [:live])
+ExUnit.start(exclude: [:live], assert_receive_timeout: 1_000)

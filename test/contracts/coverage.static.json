@@ -1,0 +1,264 @@
+{
+  "apps": {
+    "jido_chat_discord": {
+      "active": 20,
+      "coverage": 1.0,
+      "covered": 20
+    }
+  },
+  "components": {
+    "jido_chat_discord.actions": {
+      "active": 6,
+      "app": "jido_chat_discord",
+      "coverage": 1.0,
+      "covered": 6,
+      "form": "light",
+      "obligations": {
+        "jido_chat_discord.actions.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test facade helpers execute their core Actions with explicit request identity"
+          ]
+        },
+        "jido_chat_discord.actions.I2": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test a real Flow composes core and native Signal Actions in order"
+          ]
+        },
+        "jido_chat_discord.actions.I3": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test stream and binary uploads cross the private boundary exactly once"
+          ]
+        },
+        "jido_chat_discord.actions.I4": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test confirmed rate rejection is typed and does not cause an automatic second write"
+          ]
+        },
+        "jido_chat_discord.actions.I5": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test altered Signals are rejected before transport through both execution boundaries"
+          ]
+        },
+        "jido_chat_discord.actions.I6": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test native Action completions use provider identity and causal context"
+          ]
+        }
+      }
+    },
+    "jido_chat_discord.adapter": {
+      "active": 4,
+      "app": "jido_chat_discord",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_discord.adapter.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test public discovery and all 23 capabilities have fixed expectations"
+          ]
+        },
+        "jido_chat_discord.adapter.I2": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test all seven unsupported core operations fail before any provider I/O"
+          ]
+        },
+        "jido_chat_discord.adapter.I3": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test same core Action keeps clients provider IDs and trace context separate"
+          ]
+        },
+        "jido_chat_discord.adapter.I4": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test fixed route fixtures verify requests and provider identities"
+          ]
+        }
+      }
+    },
+    "jido_chat_discord.normalization": {
+      "active": 4,
+      "app": "jido_chat_discord",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_discord.normalization.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test fixed message reaction delete and thread events produce scoped catalog facts"
+          ]
+        },
+        "jido_chat_discord.normalization.I2": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test slash component and modal input drops private controls"
+          ]
+        },
+        "jido_chat_discord.normalization.I3": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test fixed media projection uses a stable scoped reference"
+          ]
+        },
+        "jido_chat_discord.normalization.I4": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test malformed siblings produce safe failures without dropping good input"
+          ]
+        }
+      }
+    },
+    "jido_chat_discord.signals": {
+      "active": 2,
+      "app": "jido_chat_discord",
+      "coverage": 1.0,
+      "covered": 2,
+      "form": "light",
+      "obligations": {
+        "jido_chat_discord.signals.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test all nine native Signal identities are fixed and catalog roundtrip"
+          ]
+        },
+        "jido_chat_discord.signals.I2": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test constructors enforce shared JSON context options and encoded size policy"
+          ]
+        }
+      }
+    },
+    "jido_chat_discord.source": {
+      "active": 4,
+      "app": "jido_chat_discord",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_discord.source.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test Source identity and fact declarations have no startup side effects"
+          ]
+        },
+        "jido_chat_discord.source.I2": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test actual Sensor dispatch preserves an accepted prefix and stops on the next rejected event",
+            "test private sink runs before Signal admission and failure prevents admission"
+          ]
+        },
+        "jido_chat_discord.source.I3": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test private controls bind identities expire and reject before transport"
+          ]
+        },
+        "jido_chat_discord.source.I4": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test controlled raw-input failure redacts OTP error report and closes socket"
+          ]
+        }
+      }
+    }
+  },
+  "covenant": "0.2.0",
+  "mode": "static",
+  "totals": {
+    "active": 20,
+    "coverage": 1.0,
+    "covered": 20
+  }
+}

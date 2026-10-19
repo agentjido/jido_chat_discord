@@ -1,135 +1,251 @@
 defmodule Jido.Chat.Discord.GatewayWorker do
-  @moduledoc """
-  Bridge-ingress worker for Discord gateway events.
-
-  The worker is runtime-agnostic and emits normalized payloads/events through
-  `sink_mfa`. Event acquisition can be push-based (`emit/2`) or pull-based
-  (`event_source_mfa` polling).
-  """
-
+  @moduledoc false
   use GenServer
 
-  @type sink_mfa :: {module(), atom(), [term()]}
-  @type source_mfa :: {module(), atom(), [term()]}
+  @events ~w(MESSAGE_CREATE MESSAGE_UPDATE MESSAGE_DELETE MESSAGE_REACTION_ADD MESSAGE_REACTION_REMOVE INTERACTION_CREATE THREAD_CREATE)
 
-  @type state :: %{
-          bridge_id: String.t(),
-          sink_mfa: sink_mfa(),
-          sink_opts: keyword(),
-          event_source_mfa: source_mfa() | nil,
-          poll_interval_ms: pos_integer(),
-          max_backoff_ms: pos_integer(),
-          backoff_ms: pos_integer()
-        }
+  @doc "Start the linked receive worker for a host Sensor."
+  def start_link({%Jido.Chat.Client{credentials: %{token: token}}, _, _} = args) when is_binary(token) and token != "",
+    do: GenServer.start_link(__MODULE__, args)
 
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
-  end
-
-  @spec emit(pid(), map() | tuple()) :: :ok
-  def emit(pid, event) when is_pid(pid) do
-    GenServer.cast(pid, {:emit, event})
-  end
-
+  def start_link(_), do: {:error, :missing_token}
   @impl true
-  def init(opts) do
-    bridge_id = Keyword.fetch!(opts, :bridge_id)
-    sink_mfa = Keyword.fetch!(opts, :sink_mfa)
-    poll_interval_ms = normalize_pos_integer(opts[:poll_interval_ms], 250)
+  def init({client, sensor, opts}) do
+    Process.flag(:trap_exit, true)
+    Process.flag(:sensitive, true)
+    monitor = Process.monitor(sensor)
 
     state = %{
-      bridge_id: bridge_id,
-      binding: Keyword.fetch!(opts, :binding),
-      sink_mfa: sink_mfa,
-      sink_opts: Keyword.get(opts, :sink_opts, []),
-      event_source_mfa: normalize_source_mfa(opts[:event_source_mfa]),
-      poll_interval_ms: poll_interval_ms,
-      max_backoff_ms: normalize_pos_integer(opts[:max_backoff_ms], 5_000),
-      backoff_ms: poll_interval_ms
+      client: client,
+      sensor: sensor,
+      monitor: monitor,
+      opts: opts,
+      gateway: Keyword.get(opts, :gateway, Jido.Chat.Discord.Gateway),
+      connection: nil,
+      stream: nil,
+      session: nil,
+      sequence: nil,
+      resume_url: nil,
+      url: nil,
+      heartbeat: nil,
+      heartbeat_timer: nil,
+      connect_timer: nil,
+      reconnect_timer: nil,
+      ack: true,
+      retry: 0,
+      parents: %{}
     }
 
-    if state.event_source_mfa, do: send(self(), :poll)
+    send(self(), :connect)
     {:ok, state}
   end
 
   @impl true
-  def handle_cast({:emit, event}, state) do
-    result = emit_event(state, event)
-    {:noreply, Map.put(state, :last_result, result)}
+  def handle_info(:connect, state) do
+    result =
+      if state.url,
+        do: {:ok, %{"url" => state.url}},
+        else:
+          state.client.transport.call(
+            state.client.credentials.token,
+            :get,
+            "/gateway/bot",
+            nil,
+            Jido.Chat.Client.options(state.client)
+          )
+
+    with {:ok, %{"url" => url}} <- result,
+         {:ok, pid} <- state.gateway.open(state.resume_url || url, state.opts) do
+      timer = Process.send_after(self(), {:connect_timeout, pid}, Keyword.get(state.opts, :connect_timeout, 15_000))
+      {:noreply, %{state | connection: pid, url: url, connect_timer: timer, reconnect_timer: nil}}
+    else
+      {:error, {:rejected, category, _}} when category in [:unauthorized, :forbidden] -> {:stop, category, state}
+      _ -> {:noreply, reconnect(state)}
+    end
+  rescue
+    _ -> {:stop, :gateway_failure, state}
+  catch
+    _, _ -> {:stop, :gateway_failure, state}
+  end
+
+  def handle_info({:gun_up, pid, :http}, %{connection: pid} = s), do: {:noreply, %{s | stream: s.gateway.upgrade(pid)}}
+
+  def handle_info({:gun_upgrade, pid, stream, ["websocket"], _}, %{connection: pid, stream: stream} = s),
+    do: {:noreply, s}
+
+  def handle_info({:gun_ws, pid, stream, {:text, text}}, %{connection: pid, stream: stream} = s) do
+    case Jason.decode(text) do
+      {:ok, payload} -> safe_packet(payload, s)
+      _ -> {:noreply, reconnect(s)}
+    end
+  end
+
+  def handle_info({:gun_ws, pid, _, {:close, code, _}}, %{connection: pid} = s)
+      when code in [4004, 4010, 4011, 4012, 4013, 4014], do: {:stop, {:gateway_closed, code}, s}
+
+  def handle_info({:gun_ws, pid, _, {:close, code, _}}, %{connection: pid} = s) when code in [4007, 4009],
+    do: {:noreply, reconnect(%{s | session: nil, sequence: nil, resume_url: nil})}
+
+  def handle_info({:gun_ws, pid, _, :close}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gun_ws, pid, _, {:close, _, _}}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gun_down, pid, _, _, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gun_error, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+
+  def handle_info({:gun_error, pid, _, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:EXIT, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:EXIT, pid, reason}, %{sensor: pid} = s), do: {:stop, reason, s}
+  def handle_info({:DOWN, ref, :process, _, _}, %{monitor: ref} = s), do: {:stop, :normal, s}
+  def handle_info({:connect_timeout, pid}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:heartbeat, nil}, %{connection: nil} = s), do: {:noreply, s}
+  def handle_info({:heartbeat, pid}, %{connection: pid, ack: false} = s), do: {:noreply, reconnect(s)}
+
+  def handle_info({:heartbeat, pid}, %{connection: pid} = s) do
+    send_packet(s, 1, s.sequence)
+    {:noreply, %{s | ack: false, heartbeat_timer: Process.send_after(self(), {:heartbeat, s.connection}, s.heartbeat)}}
+  end
+
+  def handle_info(_, s), do: {:noreply, s}
+
+  defp safe_packet(payload, state) do
+    packet(payload, state)
+  rescue
+    _ -> {:stop, :gateway_failure, state}
+  catch
+    _, _ -> {:stop, :gateway_failure, state}
+  end
+
+  defp packet(%{"op" => 10, "d" => %{"heartbeat_interval" => interval}}, s)
+       when is_integer(interval) and interval > 0 do
+    cancel(s.connect_timer)
+    timer = Process.send_after(self(), {:heartbeat, s.connection}, trunc(:rand.uniform() * interval))
+
+    if s.session do
+      send_packet(s, 6, %{"token" => s.client.credentials.token, "session_id" => s.session, "seq" => s.sequence})
+    else
+      send_packet(s, 2, %{
+        "token" => s.client.credentials.token,
+        "intents" => Keyword.get(s.opts, :intents, 46593),
+        "properties" => %{"os" => "linux", "browser" => "jido_chat_discord", "device" => "jido_chat_discord"}
+      })
+    end
+
+    {:noreply, %{s | heartbeat: interval, heartbeat_timer: timer, connect_timer: nil, ack: true}}
+  end
+
+  defp packet(%{"op" => 11}, s), do: {:noreply, %{s | ack: true}}
+
+  defp packet(%{"op" => 1}, s) do
+    send_packet(s, 1, s.sequence)
+    {:noreply, s}
+  end
+
+  defp packet(%{"op" => 7}, s), do: {:noreply, reconnect(s)}
+
+  defp packet(%{"op" => 9, "d" => resumable}, s) do
+    s = if resumable, do: s, else: %{s | session: nil, sequence: nil, resume_url: nil}
+    {:noreply, reconnect(s)}
+  end
+
+  defp packet(%{"op" => 0, "t" => "READY", "d" => d, "s" => sequence}, s) do
+    bot_id = get_in(d, ["user", "id"])
+    client = %{s.client | config: Keyword.put(s.client.config, :bot_id, bot_id)}
+
+    {:noreply,
+     %{
+       s
+       | client: client,
+         session: d["session_id"],
+         resume_url: d["resume_gateway_url"],
+         sequence: sequence,
+         retry: 0,
+         parents: parents(d["guilds"] || [], s.parents)
+     }}
+  end
+
+  defp packet(%{"op" => 0, "t" => "GUILD_CREATE", "d" => d, "s" => sequence}, s),
+    do: {:noreply, %{s | sequence: sequence, parents: parents([d], s.parents)}}
+
+  defp packet(%{"op" => 0, "t" => kind, "d" => d, "s" => sequence} = event, s) when kind in @events do
+    d = if parent = s.parents[d["channel_id"]], do: Map.put(d, "parent_id", parent), else: d
+    event = Map.put(event, "d", d)
+
+    with :ok <- capture_interaction(kind, d, s),
+         {:ok, delivery} <- Jido.Chat.normalize(s.client, event),
+         :ok <- Jido.Chat.Sensor.push(s.sensor, delivery.signals, Keyword.get(s.opts, :push_timeout, 5_000)) do
+      parents = if kind == "THREAD_CREATE", do: Map.put(s.parents, d["id"], d["parent_id"]), else: s.parents
+      {:noreply, %{s | sequence: sequence, retry: 0, parents: parents}}
+    else
+      _ -> {:stop, :input_rejected, s}
+    end
+  catch
+    :exit, _ -> {:stop, :input_rejected, s}
+  end
+
+  defp packet(%{"op" => 0, "s" => sequence}, s), do: {:noreply, %{s | sequence: sequence, retry: 0}}
+  defp packet(_, s), do: {:noreply, s}
+
+  defp capture_interaction("INTERACTION_CREATE", data, s),
+    do: Jido.Chat.Discord.Interaction.capture(s.client, data, s.opts[:interaction_sink])
+
+  defp capture_interaction(_, _, _), do: :ok
+
+  defp parents(guilds, acc),
+    do:
+      Enum.reduce(guilds, acc, fn guild, acc ->
+        Enum.reduce(guild["threads"] || [], acc, fn t, acc -> Map.put(acc, t["id"], t["parent_id"]) end)
+      end)
+
+  defp send_packet(s, op, data), do: s.gateway.send_frame(s.connection, s.stream, %{"op" => op, "d" => data})
+
+  defp reconnect(s) do
+    cancel(s.heartbeat_timer)
+    cancel(s.connect_timer)
+    close(s)
+    cancel(s.reconnect_timer)
+    delay = Keyword.get(s.opts, :reconnect_delay, min(1_000 * Integer.pow(2, min(s.retry, 5)), 30_000))
+    timer = Process.send_after(self(), :connect, delay)
+
+    %{
+      s
+      | connection: nil,
+        stream: nil,
+        ack: true,
+        heartbeat_timer: nil,
+        connect_timer: nil,
+        reconnect_timer: timer,
+        retry: s.retry + 1
+    }
+  end
+
+  defp cancel(nil), do: :ok
+  defp cancel(ref), do: Process.cancel_timer(ref)
+  defp close(%{connection: nil}), do: :ok
+  defp close(s), do: s.gateway.close(s.connection)
+  @impl true
+  def format_status(status) do
+    status = Enum.reduce([:state, :message, :log, :dictionary], status, &Map.put(&2, &1, :redacted))
+
+    case status do
+      %{reason: reason}
+      when reason in [:normal, :shutdown, :input_rejected, :unauthorized, :forbidden, :gateway_failure] ->
+        status
+
+      %{reason: {:gateway_closed, code}} when code in [4004, 4010, 4011, 4012, 4013, 4014] ->
+        status
+
+      %{reason: _} ->
+        Map.put(status, :reason, :gateway_failure)
+
+      _ ->
+        status
+    end
   end
 
   @impl true
-  def handle_info(:poll, %{event_source_mfa: nil} = state), do: {:noreply, state}
-
-  def handle_info(:poll, state) do
-    case pull_events(state.event_source_mfa) do
-      {:ok, events} ->
-        result = emit_event(state, events)
-        schedule_poll(state.poll_interval_ms)
-        {:noreply, state |> Map.put(:last_result, result) |> Map.put(:backoff_ms, state.poll_interval_ms)}
-
-      {:error, _reason} ->
-        delay = min(state.backoff_ms, state.max_backoff_ms)
-        schedule_poll(delay)
-
-        {:noreply, %{state | backoff_ms: min(max(delay * 2, state.poll_interval_ms), state.max_backoff_ms)}}
-    end
+  def terminate(_, s) do
+    cancel(s.heartbeat_timer)
+    cancel(s.connect_timer)
+    cancel(s.reconnect_timer)
+    close(s)
   end
-
-  defp emit_event(state, event) do
-    with {:ok, delivery} <- Jido.Chat.normalize_event(state.binding, event) do
-      case invoke_sink(state.sink_mfa, delivery, state.sink_opts) do
-        :ok -> :ok
-        {:ok, _} -> :ok
-        _ -> {:error, :sink_rejected}
-      end
-    end
-  rescue
-    _ -> {:error, :sink_failed}
-  catch
-    _, _ -> {:error, :sink_failed}
-  end
-
-  defp invoke_sink({module, function, base_args}, payload, opts)
-       when is_atom(module) and is_atom(function) and is_list(base_args) and is_list(opts) do
-    apply(module, function, base_args ++ [payload, opts])
-  end
-
-  defp invoke_sink(_sink_mfa, _payload, _opts), do: {:error, :invalid_sink_mfa}
-
-  defp pull_events({module, function, args})
-       when is_atom(module) and is_atom(function) and is_list(args) do
-    case apply(module, function, args) do
-      {:ok, events} when is_list(events) -> {:ok, events}
-      events when is_list(events) -> {:ok, events}
-      {:error, _reason} = error -> error
-      other -> {:error, {:invalid_source_result, other}}
-    end
-  end
-
-  defp pull_events(_), do: {:error, :invalid_event_source}
-
-  defp schedule_poll(delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
-    Process.send_after(self(), :poll, delay_ms)
-  end
-
-  defp normalize_source_mfa({module, function, args})
-       when is_atom(module) and is_atom(function) and is_list(args),
-       do: {module, function, args}
-
-  defp normalize_source_mfa(_), do: nil
-
-  defp normalize_pos_integer(value, default)
-  defp normalize_pos_integer(nil, default), do: default
-  defp normalize_pos_integer(value, _default) when is_integer(value) and value > 0, do: value
-
-  defp normalize_pos_integer(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {parsed, ""} when parsed > 0 -> parsed
-      _ -> default
-    end
-  end
-
-  defp normalize_pos_integer(_value, default), do: default
 end
