@@ -2,6 +2,7 @@ defmodule Jido.Chat.Discord.MixProject do
   use Mix.Project
 
   @version "1.1.0"
+  @jido_chat_ref "7d84263d017ee0b15e050312922d8a60d5f6fabc"
   @source_url "https://github.com/agentjido/jido_chat_discord"
   @description "Discord adapter package for Jido.Chat"
 
@@ -62,12 +63,25 @@ defmodule Jido.Chat.Discord.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  defp chat_dependency do
+    case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
+      {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
+        {:jido_chat, path: Path.expand(path, __DIR__), override: true}
+
+      {env, _path} when env in [:dev, :test] ->
+        {:jido_chat, github: "agentjido/jido_chat", ref: @jido_chat_ref, override: true}
+
+      _ ->
+        {:jido_chat, "~> 3.0.0-dev"}
+    end
+  end
+
   defp deps do
     [
       # Runtime dependencies
       {:gun, "~> 2.0"},
       {:jason, "~> 1.4"},
-      {:jido_chat, "~> 3.0.0-dev"},
+      chat_dependency(),
       {:req, "~> 0.6"},
 
       # Development and test dependencies

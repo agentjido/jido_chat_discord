@@ -8,6 +8,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
   test "public discovery and all 23 capabilities have fixed expectations" do
     expected = File.read!(Path.join(__DIR__, "fixtures/capabilities.json")) |> Jason.decode!()
     c = client(fn _, _, _, _ -> flunk("discovery performed I/O") end)
+    assert :ok = Chat.AdapterTestKit.Assertions.assert_capability_coherence(Chat.Discord.Adapter)
     assert length(Map.keys(expected)) == 23
 
     assert Map.new(Chat.Discord.Adapter.capabilities(), fn {k, v} -> {Atom.to_string(k), Atom.to_string(v)} end) ==
@@ -46,6 +47,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
   @tag obligation: "jido_chat_discord.adapter.I2"
   test "all seven unsupported core operations fail before any provider I/O" do
     c = client(fn _, _, _, _ -> flunk("unsupported operation performed I/O") end)
+    assert :ok = Chat.AdapterTestKit.Assertions.assert_unsupported_operations(c)
 
     cases = [
       {Chat.Signal.GetUser, %{"user_id" => "404"}},
