@@ -42,7 +42,7 @@ defmodule Jido.Chat.Discord.ExtensionsTest do
     assert_receive {"/channels/202/messages/101/threads", %{"name" => "thread"}}
 
     for action <- Jido.Chat.Discord.actions() do
-      assert %{"input_schema" => _, "output_schema" => _} = action.to_json()
+      assert %{"input_schema" => _, "output_schema" => _} = action.authoring_contract()
       assert is_map(action.result_schema())
     end
   end

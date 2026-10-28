@@ -2,7 +2,7 @@ defmodule Jido.Chat.Discord.MixProject do
   use Mix.Project
 
   @version "1.1.0"
-  @jido_chat_ref "7d84263d017ee0b15e050312922d8a60d5f6fabc"
+  @jido_chat_ref "0b6f16d9b91b37c61f2ad913dcdd4adea1713f88"
   @source_url "https://github.com/agentjido/jido_chat_discord"
   @description "Discord adapter package for Jido.Chat"
 
@@ -15,10 +15,6 @@ defmodule Jido.Chat.Discord.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      # No patched cowlib Hex release is available yet.
-      hex: [
-        ignore_advisories: ["CVE-2026-43966"]
-      ],
       name: "Jido Chat Discord",
       description: @description,
       source_url: @source_url,
@@ -79,9 +75,10 @@ defmodule Jido.Chat.Discord.MixProject do
   defp deps do
     [
       # Runtime dependencies
-      {:gun, "~> 2.0"},
       {:jason, "~> 1.4"},
       chat_dependency(),
+      {:mint, "~> 1.8"},
+      {:mint_web_socket, "~> 1.0.6"},
       {:req, "~> 0.6"},
 
       # Development and test dependencies

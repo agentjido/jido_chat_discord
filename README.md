@@ -63,7 +63,7 @@ For a host without the Chat Plugin:
 )
 ```
 
-The Source starts one linked Gun WebSocket worker. It returns before it sends
+The Source starts one linked Mint WebSocket worker. It returns before it sends
 input to the Sensor. It uses Gateway v10 JSON, heartbeats, ACK checks, session
 resume, and bounded reconnect delay. It closes the socket when it stops.
 It starts no Nostrum application and uses no application-wide bot token.
@@ -190,6 +190,7 @@ API expectations; no test rewrites them from the implementation.
 
 The worker redacts state, current message, reason details, debug log, and process
 dictionary in OTP status/error reports. A controlled raw-frame failure tests
-this boundary. The Gun socket runs with the Erlang sensitive flag, which limits
-process inspection and tracing. This does not establish secrecy for every Gun,
-TLS, VM crash-dump, or host logger failure path. Hosts must protect those logs.
+this boundary. The Mint socket process runs with the Erlang sensitive flag,
+which limits process inspection and tracing. This does not establish secrecy
+for every TLS, VM crash-dump, or host logger failure path. Hosts must protect
+those logs.

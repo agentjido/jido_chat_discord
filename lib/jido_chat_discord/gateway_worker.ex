@@ -68,30 +68,30 @@ defmodule Jido.Chat.Discord.GatewayWorker do
     _, _ -> {:stop, :gateway_failure, state}
   end
 
-  def handle_info({:gun_up, pid, :http}, %{connection: pid} = s), do: {:noreply, %{s | stream: s.gateway.upgrade(pid)}}
+  def handle_info({:gateway_up, pid}, %{connection: pid} = s),
+    do: {:noreply, %{s | stream: s.gateway.upgrade(pid)}}
 
-  def handle_info({:gun_upgrade, pid, stream, ["websocket"], _}, %{connection: pid, stream: stream} = s),
+  def handle_info({:gateway_upgrade, pid, stream}, %{connection: pid, stream: stream} = s),
     do: {:noreply, s}
 
-  def handle_info({:gun_ws, pid, stream, {:text, text}}, %{connection: pid, stream: stream} = s) do
+  def handle_info({:gateway_ws, pid, stream, {:text, text}}, %{connection: pid, stream: stream} = s) do
     case Jason.decode(text) do
       {:ok, payload} -> safe_packet(payload, s)
       _ -> {:noreply, reconnect(s)}
     end
   end
 
-  def handle_info({:gun_ws, pid, _, {:close, code, _}}, %{connection: pid} = s)
+  def handle_info({:gateway_ws, pid, _, {:close, code, _}}, %{connection: pid} = s)
       when code in [4004, 4010, 4011, 4012, 4013, 4014], do: {:stop, {:gateway_closed, code}, s}
 
-  def handle_info({:gun_ws, pid, _, {:close, code, _}}, %{connection: pid} = s) when code in [4007, 4009],
+  def handle_info({:gateway_ws, pid, _, {:close, code, _}}, %{connection: pid} = s) when code in [4007, 4009],
     do: {:noreply, reconnect(%{s | session: nil, sequence: nil, resume_url: nil})}
 
-  def handle_info({:gun_ws, pid, _, :close}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
-  def handle_info({:gun_ws, pid, _, {:close, _, _}}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
-  def handle_info({:gun_down, pid, _, _, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
-  def handle_info({:gun_error, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gateway_ws, pid, _, :close}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gateway_ws, pid, _, {:close, _, _}}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gateway_down, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
+  def handle_info({:gateway_error, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
 
-  def handle_info({:gun_error, pid, _, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
   def handle_info({:EXIT, pid, _}, %{connection: pid} = s), do: {:noreply, reconnect(s)}
   def handle_info({:EXIT, pid, reason}, %{sensor: pid} = s), do: {:stop, reason, s}
   def handle_info({:DOWN, ref, :process, _, _}, %{monitor: ref} = s), do: {:stop, :normal, s}

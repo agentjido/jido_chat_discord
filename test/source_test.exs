@@ -22,9 +22,9 @@ defmodule Jido.Chat.Discord.SourceTest do
     opts = Keyword.merge(opts, extra)
     sensor = start_supervised!({Jido.Chat.Sensor, opts})
     assert_receive {:gateway_open, worker, connection, _}
-    send(worker, {:gun_up, connection, :http})
+    send(worker, {:gateway_up, connection})
     :sys.get_state(worker)
-    send(worker, {:gun_upgrade, connection, connection, ["websocket"], []})
+    send(worker, {:gateway_upgrade, connection, connection})
     packet(worker, connection, %{"op" => 10, "d" => %{"heartbeat_interval" => 100_000}})
     assert_receive {:gateway_sent, %{"op" => 2, "d" => %{"intents" => 46593}}}
 
@@ -39,7 +39,7 @@ defmodule Jido.Chat.Discord.SourceTest do
   end
 
   defp packet(worker, connection, data) do
-    send(worker, {:gun_ws, connection, connection, {:text, Jason.encode!(data)}})
+    send(worker, {:gateway_ws, connection, connection, {:text, Jason.encode!(data)}})
     :sys.get_state(worker)
   end
 
@@ -82,7 +82,7 @@ defmodule Jido.Chat.Discord.SourceTest do
     send(worker, {:heartbeat, con})
     assert_receive {:gateway_closed, ^con}
     assert_receive {:gateway_open, ^worker, con2, "wss://resume.example"}
-    send(worker, {:gun_up, con2, :http})
+    send(worker, {:gateway_up, con2})
     :sys.get_state(worker)
     packet(worker, con2, %{"op" => 10, "d" => %{"heartbeat_interval" => 100_000}})
     assert_receive {:gateway_sent, %{"op" => 6, "d" => %{"session_id" => "session", "seq" => 1}}}
@@ -94,7 +94,7 @@ defmodule Jido.Chat.Discord.SourceTest do
     {_, worker, con, _} = start_source()
     packet(worker, con, %{"op" => 9, "d" => false})
     assert_receive {:gateway_open, ^worker, con2, "wss://gateway.example"}
-    send(worker, {:gun_up, con2, :http})
+    send(worker, {:gateway_up, con2})
     :sys.get_state(worker)
     packet(worker, con2, %{"op" => 10, "d" => %{"heartbeat_interval" => 100_000}})
     assert_receive {:gateway_sent, %{"op" => 2}}
@@ -129,7 +129,7 @@ defmodule Jido.Chat.Discord.SourceTest do
   test "fatal close codes stop the Source and Sensor" do
     {sensor, worker, con, _} = start_source()
     ref = Process.monitor(sensor)
-    send(worker, {:gun_ws, con, con, {:close, 4014, "not allowed"}})
+    send(worker, {:gateway_ws, con, con, {:close, 4014, "not allowed"}})
     assert_receive {:DOWN, ^ref, :process, ^sensor, _}, 1000
     assert_receive {:gateway_closed, ^con}
   end
@@ -137,7 +137,7 @@ defmodule Jido.Chat.Discord.SourceTest do
   test "unknown messages and stale sockets have no effect" do
     {_, worker, con, _} = start_source()
     packet(worker, con, %{"op" => 99})
-    send(worker, {:gun_down, self(), :http, :closed, []})
+    send(worker, {:gateway_down, self(), :closed})
     send(worker, :unrelated)
     assert :sys.get_state(worker).connection == con
 
@@ -155,15 +155,15 @@ defmodule Jido.Chat.Discord.SourceTest do
 
       event =
         case kind do
-          :down -> {:gun_down, con, :http, :closed, []}
-          :error -> {:gun_error, con, con, :closed}
-          :connection_error -> {:gun_error, con, :closed}
+          :down -> {:gateway_down, con, :closed}
+          :error -> {:gateway_error, con, :closed}
+          :connection_error -> {:gateway_error, con, :closed}
           :exit -> {:EXIT, con, :closed}
-          :close -> {:gun_ws, con, con, :close}
-          :expired -> {:gun_ws, con, con, {:close, 4009, "expired"}}
-          :invalid_sequence -> {:gun_ws, con, con, {:close, 4007, "bad sequence"}}
+          :close -> {:gateway_ws, con, con, :close}
+          :expired -> {:gateway_ws, con, con, {:close, 4009, "expired"}}
+          :invalid_sequence -> {:gateway_ws, con, con, {:close, 4007, "bad sequence"}}
           :timeout -> {:connect_timeout, con}
-          :json -> {:gun_ws, con, con, {:text, "invalid"}}
+          :json -> {:gateway_ws, con, con, {:text, "invalid"}}
         end
 
       send(worker, event)
@@ -181,7 +181,7 @@ defmodule Jido.Chat.Discord.SourceTest do
 
   test "normal Gateway close reconnects" do
     {_, worker, con, _} = start_source()
-    send(worker, {:gun_ws, con, con, {:close, 1000, "closed"}})
+    send(worker, {:gateway_ws, con, con, {:close, 1000, "closed"}})
     assert_receive {:gateway_open, ^worker, _, _}
   end
 
@@ -202,12 +202,12 @@ defmodule Jido.Chat.Discord.SourceTest do
     {:ok, worker} = Source.start_link(c, sensor, gateway: TestGateway, test_pid: self())
     ref = Process.monitor(worker)
     assert_receive {:gateway_open, ^worker, con, _}
-    send(worker, {:gun_up, con, :http})
+    send(worker, {:gateway_up, con})
     :sys.get_state(worker)
 
     send(
       worker,
-      {:gun_ws, con, con, {:text, Jason.encode!(%{"op" => 0, "t" => "MESSAGE_CREATE", "s" => 2, "d" => message()})}}
+      {:gateway_ws, con, con, {:text, Jason.encode!(%{"op" => 0, "t" => "MESSAGE_CREATE", "s" => 2, "d" => message()})}}
     )
 
     assert_receive :batch_rejected

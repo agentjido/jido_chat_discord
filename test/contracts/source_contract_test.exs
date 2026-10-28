@@ -36,7 +36,7 @@ defmodule Jido.Chat.Discord.SourceContractTest do
     _sensor = start_supervised!(Supervisor.child_spec({Jido.Chat.Sensor, options}, restart: :temporary))
     assert_receive {:gateway_open, worker, con, _}
     assert Process.alive?(worker)
-    send(worker, {:gun_up, con, :http})
+    send(worker, {:gateway_up, con})
     :sys.get_state(worker)
     on_exit(fn -> if Process.alive?(worker), do: GenServer.stop(worker) end)
     {c, worker, con}
@@ -86,7 +86,7 @@ defmodule Jido.Chat.Discord.SourceContractTest do
     for result <- [:hold, {:error, :rejected}, :raise] do
       {_c, worker, con} = connect({__MODULE__, :put, [self(), result]})
       ref = Process.monitor(worker)
-      send(worker, {:gun_ws, con, con, {:text, Jason.encode!(event(secret))}})
+      send(worker, {:gateway_ws, con, con, {:text, Jason.encode!(event(secret))}})
 
       assert_receive {:private,
                       %Interaction{
@@ -134,12 +134,12 @@ defmodule Jido.Chat.Discord.SourceContractTest do
     store = start_supervised!({Agent, fn -> 0 end})
     {_c, worker, con} = connect(nil, {RejectSecond, store: store, observer: self()})
     secret = Base.encode64(:crypto.strong_rand_bytes(24))
-    send(worker, {:gun_ws, con, con, {:text, Jason.encode!(event(secret))}})
+    send(worker, {:gateway_ws, con, con, {:text, Jason.encode!(event(secret))}})
     assert_receive {:accepted, %{data: %{"interaction_id" => "909"}}}
     assert :sys.get_state(worker).sequence == 2
     ref = Process.monitor(worker)
     next = event(secret) |> put_in(["d", "id"], "910") |> Map.put("s", 3)
-    send(worker, {:gun_ws, con, con, {:text, Jason.encode!(next)}})
+    send(worker, {:gateway_ws, con, con, {:text, Jason.encode!(next)}})
     assert_receive {:DOWN, ^ref, :process, ^worker, :input_rejected}
     assert_receive {:gateway_closed, ^con}
     refute_receive {:accepted, _}, 20
@@ -201,7 +201,7 @@ defmodule Jido.Chat.Discord.SourceContractTest do
 
     log =
       capture_log(fn ->
-        send(worker, {:gun_ws, con, con, {:text, Jason.encode!(event(secret))}})
+        send(worker, {:gateway_ws, con, con, {:text, Jason.encode!(event(secret))}})
         assert_receive {:DOWN, ^ref, :process, ^worker, :input_rejected}
         assert_receive {:gateway_closed, ^con}
       end)
@@ -209,15 +209,13 @@ defmodule Jido.Chat.Discord.SourceContractTest do
     refute log =~ secret
     refute log =~ "test-secret"
     assert log =~ "input_rejected"
-    # Gun event callbacks run in the socket process and disable process tracing.
+
     task =
       Task.async(fn ->
-        assert nil == Jido.Chat.Discord.GatewayEvents.init(%{}, nil)
-        assert true == Process.flag(:sensitive, false)
+        assert {:ok, _state} =
+                 Jido.Chat.Discord.Gateway.init({self(), "wss://gateway.example", Mint.WebSocket})
 
-        for {callback, 2} <- Jido.Chat.Discord.GatewayEvents.__info__(:functions), callback != :init do
-          assert nil == apply(Jido.Chat.Discord.GatewayEvents, callback, [%{}, nil])
-        end
+        assert true == Process.flag(:sensitive, false)
       end)
 
     Task.await(task)
