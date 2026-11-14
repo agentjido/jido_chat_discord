@@ -4,7 +4,7 @@ defmodule Jido.Chat.Discord.LiveHelpers do
 
   @doc false
   def request(definition, client, data) do
-    definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => "live:" <> Jido.Signal.ID.generate!()}, data),
+    definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => "live:" <> Jido.Id.uuid7()}, data),
       extensions: %{
         "traceparent" => "00-11111111111111111111111111111111-2222222222222222-01",
         "tracestate" => "discord=live"
@@ -35,7 +35,7 @@ defmodule Jido.Chat.Discord.LiveHelpers do
     end
 
     assert {:ok, _} = Jido.Signal.Catalog.validate(Jido.Chat.catalog(client), signal)
-    refute Jason.encode!(Jido.Signal.to_map(signal)) =~ client.credentials.token
+    refute Jason.encode!(Jido.Signal.Codec.to_map(signal)) =~ client.credentials.token
     signal.data["result"]
   end
 

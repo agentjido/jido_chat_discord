@@ -101,7 +101,7 @@ defmodule Jido.Chat.Discord.AdapterContractTest do
       assert completed.data["result"]["id"] == provider
       assert completed.data["request_id"] == "fixed-request"
       assert completed.extensions == Map.put(s.extensions, "jidocausationid", s.id)
-      refute Jason.encode!(Jido.Signal.to_map(completed)) =~ token
+      refute Jason.encode!(Jido.Signal.Codec.to_map(completed)) =~ token
     end
   end
 

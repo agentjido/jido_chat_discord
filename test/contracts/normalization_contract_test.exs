@@ -28,7 +28,7 @@ defmodule Jido.Chat.Discord.NormalizationContractTest do
       assert repeated.id == delivery.id
       assert Enum.map(repeated.signals, &{&1.id, &1.data}) == Enum.map(delivery.signals, &{&1.id, &1.data})
       assert fact.type == type
-      assert %Jido.Signal.Trace{} = Jido.Signal.Trace.get(fact)
+      assert %Jido.Trace{} = Jido.Signal.Context.get_trace(fact)
       assert Map.take(fact.data, Map.keys(expected)) == expected
       assert fact.source == c.source
       assert fact.subject == Chat.Signal.Identity.conversation_subject(c.id, "202")
@@ -65,7 +65,7 @@ defmodule Jido.Chat.Discord.NormalizationContractTest do
       assert fact.type == type
       assert Map.take(fact.data, Map.keys(expected)) == expected
       assert fact.data["interaction_id"] == "909"
-      refute Jason.encode!(Jido.Signal.to_map(fact)) =~ secret
+      refute Jason.encode!(Jido.Signal.Codec.to_map(fact)) =~ secret
       refute Map.has_key?(fact.data, "raw")
       assert {:ok, _} = Jido.Signal.Catalog.validate(Chat.catalog(c), fact)
     end
@@ -97,7 +97,7 @@ defmodule Jido.Chat.Discord.NormalizationContractTest do
            }
 
     assert media["kind"] == "image"
-    refute Jason.encode!(Jido.Signal.to_map(fact)) =~ "private-signed"
+    refute Jason.encode!(Jido.Signal.Codec.to_map(fact)) =~ "private-signed"
   end
 
   @tag obligation: "jido_chat_discord.normalization.I4"

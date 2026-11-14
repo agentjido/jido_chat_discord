@@ -7,7 +7,7 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
   end
 
   defp request(definition, client, data),
-    do: definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => Jido.Signal.ID.generate!()}, data))
+    do: definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => Jido.Id.uuid7()}, data))
 
   defp result({:ok, signal}), do: signal.data["result"]
   defp result(other), do: flunk("Chat request failed: #{inspect(other)}")
@@ -35,10 +35,10 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
     {:ok, _} = Application.ensure_all_started(:jido)
     start_supervised!({Jido, name: Jido.Chat.Discord.LiveJido})
     definition = Jido.Chat.Discord.LiveAgent.definition()
-    [entry] = definition.extensions
+    [entry] = definition.plugins
     [connection] = entry.data.connections
     connection = %{connection | client: Map.take(c, [:adapter, :id, :credentials, :config, :transport]), rooms: [room]}
-    definition = %{definition | extensions: [%{entry | data: %{entry.data | connections: [connection]}}]}
+    definition = %{definition | plugins: [%{entry | data: %{entry.data | connections: [connection]}}]}
     {:ok, server} = Jido.start_agent(Jido.Chat.Discord.LiveJido, definition, id: "discord-live-proof")
     assert :ok = Jido.AgentServer.await_ready(server)
     sensor_name = {Jido.Chat.Sensor, Jido.Chat.Discord.Source, Jido.Chat.Discord.Source.key(c, [])}
@@ -59,8 +59,8 @@ defmodule Jido.Chat.Discord.LiveIntegrationTest do
 
     sent = Jido.Chat.send_text(c, room, "jido-discord-source-probe:#{System.unique_integer([:positive])}") |> result()
     on_exit(fn -> cleanup(c, room, sent["id"]) end)
-    wait_until(fn -> Jido.AgentServer.agent(server).state.reply_id != "" end, 20_000)
-    state = Jido.AgentServer.agent(server).state
+    wait_until(fn -> Jido.AgentServer.snapshot(server).agent.state.reply_id != "" end, 20_000)
+    state = Jido.AgentServer.snapshot(server).agent.state
     assert state.received_id == sent["id"]
     assert state.delivery_type == "jido.chat.command.send_message.completed"
     on_exit(fn -> cleanup(c, room, state.reply_id) end)

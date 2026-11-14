@@ -40,7 +40,7 @@ defmodule Jido.Chat.Discord.NormalizerTest do
     assert s.data["mentioned"]
     assert s.data["reply_to_id"] == "12"
     assert s.data["timestamp"] == "2026-10-18T12:00:00Z"
-    refute Jason.encode!(Jido.Signal.to_map(s)) =~ "test-secret"
+    refute Jason.encode!(Jido.Signal.Codec.to_map(s)) =~ "test-secret"
   end
 
   test "Gateway envelopes, structs, updates, threads and direct messages normalize" do
@@ -87,7 +87,7 @@ defmodule Jido.Chat.Discord.NormalizerTest do
              "id" => "discord://attachment/202/101/0"
            }
 
-    refute Jason.encode!(Jido.Signal.to_map(s)) =~ "secret"
+    refute Jason.encode!(Jido.Signal.Codec.to_map(s)) =~ "secret"
   end
 
   test "delete, reactions and thread facts are catalog valid" do

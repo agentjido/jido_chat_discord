@@ -34,13 +34,11 @@ end
 
 defmodule Jido.Chat.Discord.LiveAgent do
   @moduledoc false
-  use Jido.Agent, name: "discord_live_agent"
+  use Jido.Agent, name: "discord_live_agent", plugins: [Jido.Chat.Plugin]
 
-  agent do
-    plugin(Jido.Chat.Plugin)
-
+  state do
     schema(
-      Zoi.object(%{
+      Jido.Joi.object(%{
         received_id: Zoi.string() |> Zoi.default(""),
         reply_id: Zoi.string() |> Zoi.default(""),
         delivery_type: Zoi.string() |> Zoi.default("")
@@ -58,9 +56,9 @@ defmodule Jido.Chat.Discord.LiveAgent do
   end
 
   routes do
-    route("jido.chat.message.received", Jido.Chat.Discord.LiveReply, emits: ["jido.chat.command.send_message"])
-    route("jido.chat.command.*", Jido.Chat.Plugin.Execute, emits: [])
-    route("jido.chat.command.send_message.completed", Jido.Chat.Discord.LiveRecord, emits: [])
-    route("jido.chat.command.send_message.failed", Jido.Chat.Discord.LiveRecord, emits: [])
+    route("jido.chat.message.received", Jido.Chat.Discord.LiveReply)
+    route("jido.chat.command.*", Jido.Chat.Plugin.Execute)
+    route("jido.chat.command.send_message.completed", Jido.Chat.Discord.LiveRecord)
+    route("jido.chat.command.send_message.failed", Jido.Chat.Discord.LiveRecord)
   end
 end

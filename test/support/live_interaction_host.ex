@@ -101,11 +101,10 @@ end
 
 defmodule Jido.Chat.Discord.LiveInteractionAgent do
   @moduledoc false
-  use Jido.Agent, name: "discord_live_interaction_agent"
+  use Jido.Agent, name: "discord_live_interaction_agent", plugins: [Jido.Chat.Plugin]
 
-  agent do
-    plugin(Jido.Chat.Plugin)
-    schema(Zoi.object(%{last_interaction: Zoi.string() |> Zoi.default("")}))
+  state do
+    schema(Jido.Joi.object(%{last_interaction: Zoi.string() |> Zoi.default("")}))
   end
 
   chat do
@@ -118,6 +117,6 @@ defmodule Jido.Chat.Discord.LiveInteractionAgent do
   end
 
   routes do
-    route("jido.chat.**", Jido.Chat.Discord.LiveInteractionReply, emits: [])
+    route("jido.chat.**", Jido.Chat.Discord.LiveInteractionReply)
   end
 end

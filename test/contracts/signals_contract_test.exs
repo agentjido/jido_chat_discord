@@ -28,7 +28,7 @@ defmodule Jido.Chat.Discord.SignalsContractTest do
       actual_schema = definition.schema() |> Zoi.to_json_schema() |> Jason.encode!() |> Jason.decode!()
       assert actual_schema == schemas[suffix]
       signal = request(definition, data)
-      assert {:ok, encoded} = Jido.Signal.Serialization.serialize(signal)
+      assert {:ok, encoded} = Jido.Signal.Codec.serialize(signal)
       assert {:ok, ^signal} = Jido.Signal.Catalog.decode(Jido.Chat.Discord.catalog(), encoded)
       assert {:ok, _} = Jido.Signal.Catalog.validate(Jido.Chat.Discord.catalog(), signal)
 

@@ -189,7 +189,7 @@ defmodule Jido.Chat.Discord.OperationsTest do
     assert result.data["result"] == %{"acknowledged" => true}
     path = "/interactions/123/#{private.token}/callback"
     assert_receive {^path, %{"type" => 9}}
-    refute Jason.encode!(Jido.Signal.to_map(result)) =~ private.token
+    refute Jason.encode!(Jido.Signal.Codec.to_map(result)) =~ private.token
     assert {:error, _} = Jido.Chat.execute(c, s)
   end
 

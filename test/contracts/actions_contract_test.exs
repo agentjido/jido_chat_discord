@@ -205,9 +205,9 @@ defmodule Jido.Chat.Discord.ActionsContractTest do
       assert completed.extensions["traceparent"] == signal.extensions["traceparent"]
       assert completed.data["request_id"] == signal.data["request_id"]
       assert {:ok, _} = Jido.Signal.Catalog.validate(Jido.Chat.catalog(c), completed)
-      assert {:ok, encoded} = Jido.Signal.Serialization.serialize(completed)
+      assert {:ok, encoded} = Jido.Signal.Codec.serialize(completed)
       assert {:ok, ^completed} = Jido.Signal.Catalog.decode(Jido.Chat.catalog(c), encoded)
-      refute Jason.encode!(Jido.Signal.to_map(completed)) =~ private[:interaction].token
+      refute Jason.encode!(Jido.Signal.Codec.to_map(completed)) =~ private[:interaction].token
 
       assert {:ok, %{signal: second}} =
                Jido.Chat.Discord.ActionHelpers.execute(action, signal, %{client: c, options: private}, max_attempts: 1)

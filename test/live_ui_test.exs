@@ -18,7 +18,7 @@ defmodule Jido.Chat.Discord.LiveUITest do
     {:ok, _} = Application.ensure_all_started(:jido)
     start_supervised!({Jido, name: Jido.Chat.Discord.UIJido})
     definition = LiveInteractionAgent.definition()
-    [entry] = definition.extensions
+    [entry] = definition.plugins
     [connection] = entry.data.connections
     source = %{connection.source | options: [interaction_sink: {LiveInteractionHost, :put, [LiveInteractionHost]}]}
 
@@ -29,7 +29,7 @@ defmodule Jido.Chat.Discord.LiveUITest do
         source: source
     }
 
-    definition = %{definition | extensions: [%{entry | data: %{entry.data | connections: [connection]}}]}
+    definition = %{definition | plugins: [%{entry | data: %{entry.data | connections: [connection]}}]}
     {:ok, server} = Jido.start_agent(Jido.Chat.Discord.UIJido, definition, id: "discord-ui-proof")
     assert :ok = Jido.AgentServer.await_ready(server)
     on_exit(fn -> if Process.alive?(server), do: Jido.stop_agent(Jido.Chat.Discord.UIJido, server) end)
@@ -88,7 +88,7 @@ defmodule Jido.Chat.Discord.LiveUITest do
           assert fact.data["command"] == "/" <> command_name
       end
 
-      refute inspect(Jido.AgentServer.agent(server).state) =~ "token"
+      refute inspect(Jido.AgentServer.snapshot(server).agent.state) =~ "token"
       IO.puts("UI_PASS #{expected} interaction=#{fact.data["interaction_id"]} response_ms=#{elapsed}")
     end
 
