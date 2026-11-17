@@ -252,7 +252,7 @@ defmodule Jido.Chat.Discord.Normalizer do
 
   defp room(p), do: id(p, "parent_id") || id(p, "channel_id")
   defp thread_id(p), do: if(id(p, "parent_id"), do: id(p, "channel_id"))
-  defp bot_id(client), do: Keyword.get(Jido.Chat.Client.options(client), :bot_id)
+  defp bot_id(client), do: client.config[:bot_id]
 
   @doc "Read a provider field from atom or string keys."
   def field(p, key) when is_map(p) do

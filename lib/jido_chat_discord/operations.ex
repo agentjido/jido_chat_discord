@@ -9,7 +9,7 @@ defmodule Jido.Chat.Discord.Operations do
     if signal.data["format"] == "html" do
       {:error, {:not_attempted, :unsupported_format}}
     else
-      call(operation, client, signal.data, Keyword.merge(Jido.Chat.Client.options(client), opts))
+      call(operation, client, signal.data, Keyword.merge(client.config, opts))
     end
   end
 

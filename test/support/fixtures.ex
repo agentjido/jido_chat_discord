@@ -2,7 +2,10 @@ defmodule Jido.Chat.Discord.TestTransport do
   @moduledoc false
   @behaviour Jido.Chat.Discord.Transport
   @doc false
-  def call(token, method, path, body, opts), do: opts[:handler].(token, method, path, body)
+  def call(token, method, path, body, opts) do
+    if observer = opts[:transport_observer], do: send(observer, {:discord_transport_options, opts})
+    opts[:handler].(token, method, path, body)
+  end
 end
 
 defmodule Jido.Chat.Discord.TestGateway do
@@ -49,7 +52,7 @@ defmodule Jido.Chat.Discord.Fixtures do
       id: Keyword.get(opts, :id, "discord-test"),
       credentials: %{token: Keyword.get(opts, :token, "test-secret")},
       transport: Jido.Chat.Discord.TestTransport,
-      config: [handler: handler, bot_id: "bot"]
+      config: Keyword.merge([handler: handler, bot_id: "bot"], Keyword.get(opts, :config, []))
     )
   end
 

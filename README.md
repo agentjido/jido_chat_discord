@@ -1,11 +1,10 @@
 # Jido Chat Discord
 
-## V3 checkpoint
+## V3 local integration
 
-This branch requires the Jido v3 Chat API. All dependencies use Hex.
-`jido_chat ~> 3.0.0-dev` is not published as of 2026-10-19.
-Dependency resolution and tests remain blocked until a compatible release is available.
-The lock file retains existing Hex entries; resolve it again after publication.
+This branch requires the Jido Chat V3 API. Local development uses the sibling
+`../jido_chat` package so adapter checks run against the current V3 working
+tree. Select a released Hex constraint only as part of later publication work.
 
 A stateless Discord adapter for the current `Jido.Chat` SDK.
 

@@ -4,6 +4,20 @@ defmodule Jido.Chat.Discord.OperationsTest do
   import Jido.Chat.Discord.Fixtures
   alias Jido.Chat.Discord.{Adapter, Operations}
 
+  test "private adapter config reaches transport without credentials" do
+    c =
+      client(fn _, _, _, _ -> {:ok, message()} end,
+        config: [transport_observer: self(), marker: :kept]
+      )
+
+    assert {:ok, _} = Jido.Chat.send_text(c, "202", "hello")
+    assert_receive {:discord_transport_options, options}
+    assert options[:marker] == :kept
+    assert is_function(options[:handler], 4)
+    refute Keyword.has_key?(options, :token)
+    refute Keyword.has_key?(options, :credentials)
+  end
+
   test "public send, edit, delete, stream, and reply APIs use canonical Signals" do
     test = self()
 

@@ -2,7 +2,6 @@ defmodule Jido.Chat.Discord.MixProject do
   use Mix.Project
 
   @version "1.1.0"
-  @jido_chat_ref "7652b6d74c4fc8170149ae1cfd08f981cfb1ea27"
   @source_url "https://github.com/agentjido/jido_chat_discord"
   @description "Discord adapter package for Jido.Chat"
 
@@ -60,7 +59,7 @@ defmodule Jido.Chat.Discord.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   defp chat_dependency do
-    {:jido_chat, github: "agentjido/jido_chat", ref: @jido_chat_ref}
+    {:jido_chat, path: "../jido_chat"}
   end
 
   defp deps do
@@ -104,7 +103,7 @@ defmodule Jido.Chat.Discord.MixProject do
 
   defp package do
     [
-      files: ["lib", "mix.exs", "README.md", "LICENSE", "usage-rules.md"],
+      files: ["lib", "guides", "mix.exs", "README.md", "LICENSE", "usage-rules.md"],
       maintainers: ["Mike Hostetler"],
       licenses: ["Apache-2.0"],
       links: %{
@@ -123,7 +122,8 @@ defmodule Jido.Chat.Discord.MixProject do
       source_url: @source_url,
       extras: [
         "README.md",
-        "CONTRIBUTING.md"
+        "CONTRIBUTING.md",
+        "guides/operation-matrix.md"
       ]
     ]
   end

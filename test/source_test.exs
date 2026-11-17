@@ -7,7 +7,8 @@ defmodule Jido.Chat.Discord.SourceTest do
   defp start_source(extra \\ []) do
     c =
       client(fn _, :get, "/gateway/bot", nil -> {:ok, %{"url" => "wss://gateway.example"}} end,
-        token: "token-#{System.unique_integer([:positive])}"
+        token: "token-#{System.unique_integer([:positive])}",
+        config: [transport_observer: self()]
       )
 
     opts = [
@@ -21,6 +22,9 @@ defmodule Jido.Chat.Discord.SourceTest do
 
     opts = Keyword.merge(opts, extra)
     sensor = start_supervised!({Jido.Chat.Sensor, opts})
+    assert_receive {:discord_transport_options, private}
+    refute Keyword.has_key?(private, :token)
+    refute Keyword.has_key?(private, :credentials)
     assert_receive {:gateway_open, worker, connection, _}
     send(worker, {:gateway_up, connection})
     :sys.get_state(worker)
@@ -49,7 +53,9 @@ defmodule Jido.Chat.Discord.SourceTest do
     assert Source.signal_types() == Enum.map(Jido.Chat.Discord.event_definitions(), & &1.type())
     assert Source.key(c, []) == :crypto.hash(:sha256, "test-secret")
     assert Source.key(%{c | credentials: %{}}, []) == nil
+    assert Source.key(%{c | credentials: %{token: ""}}, []) == nil
     assert {:error, :missing_token} = Source.start_link(%{c | credentials: %{}}, self(), [])
+    assert {:error, :missing_token} = Source.start_link(%{c | credentials: %{token: ""}}, self(), [])
   end
 
   test "shared Sensor admits, filters and deduplicates Gateway facts" do

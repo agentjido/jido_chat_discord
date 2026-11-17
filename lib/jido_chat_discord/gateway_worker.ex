@@ -51,7 +51,7 @@ defmodule Jido.Chat.Discord.GatewayWorker do
             :get,
             "/gateway/bot",
             nil,
-            Jido.Chat.Client.options(state.client)
+            state.client.config
           )
 
     with {:ok, %{"url" => url}} <- result,

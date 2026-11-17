@@ -31,7 +31,7 @@ defmodule Jido.Chat.Discord.Source do
   @impl true
   def key(client, _options) do
     case client.credentials[:token] do
-      token when is_binary(token) -> :crypto.hash(:sha256, token)
+      token when is_binary(token) and token != "" -> :crypto.hash(:sha256, token)
       _ -> nil
     end
   end
