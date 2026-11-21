@@ -1,5 +1,10 @@
 # Jido Chat Discord
 
+> [!IMPORTANT]
+> **The standalone Discord adapter is planned for deprecation.** The adapter is included in the [Jido Chat v3 source](https://github.com/agentjido/jido_chat/tree/release/v3).
+>
+> Check the Discord setup and supported operations in Jido Chat before changing dependencies.
+
 [![Hex.pm](https://img.shields.io/hexpm/v/jido_chat_discord.svg)](https://hex.pm/packages/jido_chat_discord)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/jido_chat_discord/)
 [![CI](https://github.com/agentjido/jido_chat_discord/actions/workflows/ci.yml/badge.svg)](https://github.com/agentjido/jido_chat_discord/actions/workflows/ci.yml)
