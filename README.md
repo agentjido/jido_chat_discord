@@ -1,9 +1,9 @@
 # Jido Chat Discord
 
 > [!IMPORTANT]
-> **The standalone Discord adapter is planned for deprecation.** The adapter is included in the [Jido Chat v3 source](https://github.com/agentjido/jido_chat/tree/release/v3).
->
-> Check the Discord setup and supported operations in Jido Chat before changing dependencies.
+> **Deprecation of the standalone Discord adapter is planned.** Jido Chat v3
+> source includes the Discord adapter.
+> See [Migrate to Jido Chat v3](#migrate-to-jido-chat-v3).
 
 [![Hex.pm](https://img.shields.io/hexpm/v/jido_chat_discord.svg)](https://hex.pm/packages/jido_chat_discord)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/jido_chat_discord/)
@@ -17,7 +17,7 @@
 
 ## Release Status
 
-This package is being prepared for the Jido 1.x chat package release line.
+The standalone package is for the Jido Chat 1.x release line.
 It is part of the Elixir implementation aligned to the Vercel Chat SDK
 ([chat-sdk.dev/docs](https://www.chat-sdk.dev/docs)).
 
@@ -32,6 +32,24 @@ def deps do
   ]
 end
 ```
+
+## Migrate to Jido Chat v3
+
+Jido Chat v3 is available from the `release/v3` source branch.
+The standalone package and the v3 source define the same `Jido.Chat.Discord`
+modules. Use these steps to migrate your application to v3 source.
+
+1. Point `:jido_chat` to the [v3 source](https://github.com/agentjido/jido_chat/tree/release/v3)
+   and remove `:jido_chat_discord` from `mix.exs` in the same edit.
+2. Add `:req` for REST. For Gateway input, also add `:mint` and
+   `:mint_web_socket`. Use the version constraints in the
+   [provider setup guide](https://github.com/agentjido/jido_chat/blob/release/v3/guides/providers.md#upgrade-from-a-standalone-package).
+3. If you upgrade from 1.x, replace standalone adapter calls with the v3
+   Client and Actions. Use the Discord Source through a Sensor for Gateway
+   input. See the [Discord guide](https://github.com/agentjido/jido_chat/blob/release/v3/guides/providers/discord.md)
+   for setup and supported operations.
+4. Run `mix deps.get`. Test outgoing requests and the input path your
+   application uses.
 
 ## Local Documentation
 
